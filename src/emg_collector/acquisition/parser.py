@@ -1,6 +1,7 @@
 """Parse raw ESP32 serial lines into validated samples, with diagnostics.
 
-Only lines with exactly three comma-separated integer fields, all within
+Only lines with exactly five comma-separated integer fields (time_us plus
+4 ADC channels from the two MyoWare 2.0 sensors), all ADC values within
 the ADC's valid range, are accepted as samples. Everything else is
 classified and counted, never silently dropped without a trace.
 """
@@ -9,14 +10,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from emg_collector.config import ADC_MAX_VALUE, ADC_MIN_VALUE, SERIAL_HEADER_LINE
+from emg_collector.config import (
+    ADC_MAX_VALUE,
+    ADC_MIN_VALUE,
+    SERIAL_FIELD_COUNT,
+    SERIAL_HEADER_LINE,
+)
 
 
 @dataclass(frozen=True)
 class ParsedSample:
     time_us: int
-    env: int
-    raw: int
+    biceps_env: int
+    biceps_raw: int
+    brachio_env: int
+    brachio_raw: int
 
 
 @dataclass
@@ -40,7 +48,8 @@ class ParserDiagnostics:
 
 
 class LineParser:
-    """Incrementally parses ``time_us,env,raw`` lines, accumulating diagnostics."""
+    """Incrementally parses ``time_us,biceps_env,biceps_raw,brachio_env,brachio_raw``
+    lines, accumulating diagnostics."""
 
     def __init__(self) -> None:
         self.diagnostics = ParserDiagnostics()
@@ -62,12 +71,14 @@ class LineParser:
             return None
 
         parts = stripped.split(",")
-        if len(parts) != 3:
+        if len(parts) != SERIAL_FIELD_COUNT:
             self.diagnostics.malformed_rows += 1
             return None
 
         try:
-            time_us, env, raw = (int(p) for p in parts)
+            time_us, biceps_env, biceps_raw, brachio_env, brachio_raw = (
+                int(p) for p in parts
+            )
         except ValueError:
             self.diagnostics.malformed_rows += 1
             return None
@@ -76,14 +87,19 @@ class LineParser:
             self.diagnostics.malformed_rows += 1
             return None
 
-        if not (ADC_MIN_VALUE <= env <= ADC_MAX_VALUE) or not (
-            ADC_MIN_VALUE <= raw <= ADC_MAX_VALUE
-        ):
+        channel_values = (biceps_env, biceps_raw, brachio_env, brachio_raw)
+        if any(not (ADC_MIN_VALUE <= value <= ADC_MAX_VALUE) for value in channel_values):
             self.diagnostics.out_of_range_rows += 1
             return None
 
         self.diagnostics.valid_rows += 1
-        return ParsedSample(time_us=time_us, env=env, raw=raw)
+        return ParsedSample(
+            time_us=time_us,
+            biceps_env=biceps_env,
+            biceps_raw=biceps_raw,
+            brachio_env=brachio_env,
+            brachio_raw=brachio_raw,
+        )
 
     def parse_lines(self, lines: list[str]) -> list[ParsedSample]:
         samples: list[ParsedSample] = []

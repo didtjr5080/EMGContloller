@@ -58,8 +58,10 @@ class SessionWriter:
                     sample.device_time_us_unwrapped,
                     f"{sample.elapsed_s:.6f}",
                     f"{sample.host_elapsed_s:.6f}",
-                    sample.env_adc,
-                    sample.raw_adc,
+                    sample.biceps_env_adc,
+                    sample.biceps_raw_adc,
+                    sample.brachio_env_adc,
+                    sample.brachio_raw_adc,
                     sample.label,
                 ]
             )

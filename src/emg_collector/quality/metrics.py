@@ -72,20 +72,29 @@ class QualityAccumulator:
     writer_queue_max_size: int = 0
     writer_queue_overflow_count: int = 0
 
-    _env_stats: _RunningStats = field(default_factory=_RunningStats)
-    _raw_stats: _RunningStats = field(default_factory=_RunningStats)
+    _biceps_env_stats: _RunningStats = field(default_factory=_RunningStats)
+    _biceps_raw_stats: _RunningStats = field(default_factory=_RunningStats)
+    _brachio_env_stats: _RunningStats = field(default_factory=_RunningStats)
+    _brachio_raw_stats: _RunningStats = field(default_factory=_RunningStats)
     _clipped_samples: int = 0
     _last_unwrapped_us: int | None = None
 
-    def record_sample(self, device_time_us_unwrapped: int, env_adc: int, raw_adc: int) -> None:
+    def record_sample(
+        self,
+        device_time_us_unwrapped: int,
+        biceps_env_adc: int,
+        biceps_raw_adc: int,
+        brachio_env_adc: int,
+        brachio_raw_adc: int,
+    ) -> None:
         self.valid_samples += 1
-        self._env_stats.update(env_adc)
-        self._raw_stats.update(raw_adc)
+        self._biceps_env_stats.update(biceps_env_adc)
+        self._biceps_raw_stats.update(biceps_raw_adc)
+        self._brachio_env_stats.update(brachio_env_adc)
+        self._brachio_raw_stats.update(brachio_raw_adc)
 
-        if env_adc in (ADC_MIN_VALUE, ADC_MAX_VALUE) or raw_adc in (
-            ADC_MIN_VALUE,
-            ADC_MAX_VALUE,
-        ):
+        channel_values = (biceps_env_adc, biceps_raw_adc, brachio_env_adc, brachio_raw_adc)
+        if any(value in (ADC_MIN_VALUE, ADC_MAX_VALUE) for value in channel_values):
             self._clipped_samples += 1
 
         if self._last_unwrapped_us is not None:
@@ -145,8 +154,10 @@ class QualityAccumulator:
                 f"({self.target_interval_us} us); this is an estimate and "
                 f"cannot fully separate real loss from ESP32 scheduling jitter"
             ),
-            "env_adc": self._env_stats.as_dict(),
-            "raw_adc": self._raw_stats.as_dict(),
+            "biceps_env_adc": self._biceps_env_stats.as_dict(),
+            "biceps_raw_adc": self._biceps_raw_stats.as_dict(),
+            "brachio_env_adc": self._brachio_env_stats.as_dict(),
+            "brachio_raw_adc": self._brachio_raw_stats.as_dict(),
             "clipping_ratio": self.clipping_ratio(),
             "writer_queue_max_size": self.writer_queue_max_size,
             "writer_queue_overflow_count": self.writer_queue_overflow_count,

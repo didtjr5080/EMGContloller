@@ -1,6 +1,11 @@
 """Real-time RAW/ENV waveform display (work order section 6.5).
 
-Incoming samples are appended to a fixed-size ring buffer as fast as they
+Two MyoWare 2.0 sensors (biceps, brachioradialis) are shown together: one
+RAW plot with both raw curves, one ENV plot with both envelope curves, so
+RAW vs ENV stays the primary visual split while both muscles are visible
+at once.
+
+Incoming samples are appended to fixed-size ring buffers as fast as they
 arrive; a separate QTimer redraws the curves at :data:`PLOT_REFRESH_HZ`, so
 plotting is decoupled from data ingestion and from CSV writing. Pausing the
 display only stops the redraw timer -- :meth:`append_samples` keeps
@@ -23,6 +28,11 @@ from emg_collector.config import (
     TARGET_SAMPLE_RATE_HZ,
 )
 
+BICEPS_RAW_COLOR = "#4c8bf5"
+BRACHIO_RAW_COLOR = "#50e3c2"
+BICEPS_ENV_COLOR = "#f5a623"
+BRACHIO_ENV_COLOR = "#bd10e0"
+
 
 class PlotPanel(QWidget):
     def __init__(
@@ -35,21 +45,34 @@ class PlotPanel(QWidget):
         self.window_seconds = window_seconds
         capacity = max(int(window_seconds * sample_rate_hz * 1.5), 100)
         self._t = deque(maxlen=capacity)
-        self._env = deque(maxlen=capacity)
-        self._raw = deque(maxlen=capacity)
+        self._biceps_env = deque(maxlen=capacity)
+        self._biceps_raw = deque(maxlen=capacity)
+        self._brachio_env = deque(maxlen=capacity)
+        self._brachio_raw = deque(maxlen=capacity)
         self._paused = False
 
         pg.setConfigOptions(antialias=False)
-        self.raw_plot = pg.PlotWidget(title="RAW")
-        self.env_plot = pg.PlotWidget(title="ENV")
+        self.raw_plot = pg.PlotWidget(title="RAW (이두근 / 상완요골근)")
+        self.env_plot = pg.PlotWidget(title="ENV (이두근 / 상완요골근)")
         self.env_plot.setXLink(self.raw_plot)
         for plot in (self.raw_plot, self.env_plot):
             plot.setLabel("left", "ADC count")
             plot.setLabel("bottom", "time", units="s")
             plot.showGrid(x=True, y=True, alpha=0.2)
+            plot.addLegend()
 
-        self._raw_curve = self.raw_plot.plot(pen=pg.mkPen(color="#4c8bf5", width=1))
-        self._env_curve = self.env_plot.plot(pen=pg.mkPen(color="#f5a623", width=1))
+        self._biceps_raw_curve = self.raw_plot.plot(
+            pen=pg.mkPen(color=BICEPS_RAW_COLOR, width=1), name="이두근 RAW"
+        )
+        self._brachio_raw_curve = self.raw_plot.plot(
+            pen=pg.mkPen(color=BRACHIO_RAW_COLOR, width=1), name="상완요골근 RAW"
+        )
+        self._biceps_env_curve = self.env_plot.plot(
+            pen=pg.mkPen(color=BICEPS_ENV_COLOR, width=1), name="이두근 ENV"
+        )
+        self._brachio_env_curve = self.env_plot.plot(
+            pen=pg.mkPen(color=BRACHIO_ENV_COLOR, width=1), name="상완요골근 ENV"
+        )
 
         self.pause_checkbox = QCheckBox("표시 일시정지")
         self.fixed_range_checkbox = QCheckBox("고정 범위 (0-4095)")
@@ -88,21 +111,36 @@ class PlotPanel(QWidget):
     def paused(self) -> bool:
         return self._paused
 
-    def append_samples(self, times_s, env_values, raw_values) -> None:
+    def append_samples(
+        self,
+        times_s,
+        biceps_env_values,
+        biceps_raw_values,
+        brachio_env_values,
+        brachio_raw_values,
+    ) -> None:
         self._t.extend(times_s)
-        self._env.extend(env_values)
-        self._raw.extend(raw_values)
+        self._biceps_env.extend(biceps_env_values)
+        self._biceps_raw.extend(biceps_raw_values)
+        self._brachio_env.extend(brachio_env_values)
+        self._brachio_raw.extend(brachio_raw_values)
 
     def clear(self) -> None:
         self._t.clear()
-        self._env.clear()
-        self._raw.clear()
-        self._raw_curve.clear()
-        self._env_curve.clear()
+        self._biceps_env.clear()
+        self._biceps_raw.clear()
+        self._brachio_env.clear()
+        self._brachio_raw.clear()
+        self._biceps_raw_curve.clear()
+        self._brachio_raw_curve.clear()
+        self._biceps_env_curve.clear()
+        self._brachio_env_curve.clear()
 
     def _redraw(self) -> None:
         if self._paused or not self._t:
             return
         t = list(self._t)
-        self._raw_curve.setData(t, list(self._raw))
-        self._env_curve.setData(t, list(self._env))
+        self._biceps_raw_curve.setData(t, list(self._biceps_raw))
+        self._brachio_raw_curve.setData(t, list(self._brachio_raw))
+        self._biceps_env_curve.setData(t, list(self._biceps_env))
+        self._brachio_env_curve.setData(t, list(self._brachio_env))

@@ -12,8 +12,10 @@ def make_sample(i: int) -> SampleRecord:
         device_time_us_unwrapped=i * 2000,
         elapsed_s=i * 0.002,
         host_elapsed_s=i * 0.002,
-        env_adc=100,
-        raw_adc=200,
+        biceps_env_adc=100,
+        biceps_raw_adc=200,
+        brachio_env_adc=300,
+        brachio_raw_adc=400,
         label="rest",
     )
 

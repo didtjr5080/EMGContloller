@@ -2,7 +2,9 @@
 
 ESP32 기반 근전도(EMG) 데이터셋 수집용 데스크톱 앱 (Python + PyQt6). `WorkOrder/Codex_EMG_Dataset_Collector_Work_Order.md`의 요구사항을 구현한다.
 
-ESP32에서 `time_us,env,raw` 형식의 500 Hz CSV 스트림(460800 baud)을 받아 실시간으로 표시하고, 원본 ADC 값을 손실 없이 저장하며, 피험자/세션 메타데이터를 신호 데이터와 분리해서 관리한다. 하드웨어 없이도 모의 신호 모드로 전체 기능을 사용/테스트할 수 있다.
+ESP32에 연결된 MyoWare 2.0 센서 2개(이두근, 상완요골근)로부터 `time_us,biceps_env,biceps_raw,brachio_env,brachio_raw` 형식의 500 Hz CSV 스트림(460800 baud)을 받아 실시간으로 표시하고, 원본 ADC 값을 손실 없이 저장하며, 피험자/세션 메타데이터를 신호 데이터와 분리해서 관리한다. 하드웨어 없이도 모의 신호 모드로 전체 기능을 사용/테스트할 수 있다.
+
+> **스키마 v2 (2채널)**: 기존 1채널(`time_us,env,raw`) 스키마는 schema_version `1.0.0`이었고, 지금은 2개의 MyoWare 센서(이두근 GPIO33/34, 상완요골근 GPIO32/35)를 동시에 읽는 schema_version `2.0.0`으로 바뀌었다. 구버전 1채널 데이터셋은 이 버전의 뷰어/검증 스크립트와 호환되지 않는다.
 
 ## 설치
 
@@ -58,7 +60,7 @@ datasets/
 ├─ participants_public.csv       # 비식별 피험자 메타데이터
 ├─ sessions.csv                  # 세션 1행 = 1레코드, status: complete/incomplete/recovered
 └─ sessions/<SESSION_ID>/
-   ├─ samples.csv   # sample_index,device_time_us,device_time_us_unwrapped,elapsed_s,host_elapsed_s,env_adc,raw_adc,label
+   ├─ samples.csv   # sample_index,device_time_us,device_time_us_unwrapped,elapsed_s,host_elapsed_s,biceps_env_adc,biceps_raw_adc,brachio_env_adc,brachio_raw_adc,label
    ├─ events.csv    # event_index,sample_index,device_time_us_unwrapped,elapsed_s,event_type,label,note
    ├─ metadata.json # 세션/장치/방식/펌웨어 규격 스냅샷
    └─ quality.json  # 수신률, 오류/결측 추정치, 클리핑 비율 등

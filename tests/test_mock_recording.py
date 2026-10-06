@@ -148,7 +148,9 @@ def test_10s_mock_integration_matches_dataset_schema(tmp_path):
             first_elapsed_us = result.value_us
         elapsed_s = (result.value_us - first_elapsed_us) / 1_000_000
 
-        quality.record_sample(result.value_us, parsed.env, parsed.raw)
+        quality.record_sample(
+            result.value_us, parsed.biceps_env, parsed.biceps_raw, parsed.brachio_env, parsed.brachio_raw
+        )
 
         records.append(
             SampleRecord(
@@ -157,8 +159,10 @@ def test_10s_mock_integration_matches_dataset_schema(tmp_path):
                 device_time_us_unwrapped=result.value_us,
                 elapsed_s=elapsed_s,
                 host_elapsed_s=elapsed_s,
-                env_adc=parsed.env,
-                raw_adc=parsed.raw,
+                biceps_env_adc=parsed.biceps_env,
+                biceps_raw_adc=parsed.biceps_raw,
+                brachio_env_adc=parsed.brachio_env,
+                brachio_raw_adc=parsed.brachio_raw,
                 label=label,
             )
         )
@@ -185,7 +189,7 @@ def test_10s_mock_integration_matches_dataset_schema(tmp_path):
     )
     store.write_session_metadata(
         session_id,
-        {"schema_version": "1.0.0", "session_id": session_id, "participant_id": "P-TEST"},
+        {"schema_version": "2.0.0", "session_id": session_id, "participant_id": "P-TEST"},
     )
     store.write_session_quality(session_id, quality.to_dict(duration_s))
 

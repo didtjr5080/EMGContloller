@@ -12,8 +12,10 @@ def make_sample(i: int, label: str = "rest") -> SampleRecord:
         device_time_us_unwrapped=i * 2000,
         elapsed_s=i * 0.002,
         host_elapsed_s=i * 0.002,
-        env_adc=1800 + i,
-        raw_adc=1800 - i,
+        biceps_env_adc=1800 + i,
+        biceps_raw_adc=1800 - i,
+        brachio_env_adc=1700 + i,
+        brachio_raw_adc=1700 - i,
         label=label,
     )
 
@@ -41,7 +43,8 @@ def test_session_data_loads_finalized_session(tmp_path):
 
     assert data.is_unfinalized is False
     assert data.sample_count == 10
-    assert data.env_adc[0] == 1800
+    assert data.biceps_env_adc[0] == 1800
+    assert data.brachio_env_adc[0] == 1700
     assert len(data.events) == 1
     assert data.events[0]["label"] == "flexion"
     assert data.metadata["participant_id"] == "P-AB12"

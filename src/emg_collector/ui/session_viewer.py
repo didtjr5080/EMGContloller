@@ -43,24 +43,30 @@ class SessionLoadError(Exception):
     pass
 
 
-def _read_samples_csv(path: Path) -> tuple[list[float], list[int], list[int], list[str]]:
+def _read_samples_csv(
+    path: Path,
+) -> tuple[list[float], list[int], list[int], list[int], list[int], list[str]]:
     elapsed_s: list[float] = []
-    env_adc: list[int] = []
-    raw_adc: list[int] = []
+    biceps_env_adc: list[int] = []
+    biceps_raw_adc: list[int] = []
+    brachio_env_adc: list[int] = []
+    brachio_raw_adc: list[int] = []
     labels: list[str] = []
     with open(path, newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
             try:
                 elapsed_s.append(float(row["elapsed_s"]))
-                env_adc.append(int(row["env_adc"]))
-                raw_adc.append(int(row["raw_adc"]))
+                biceps_env_adc.append(int(row["biceps_env_adc"]))
+                biceps_raw_adc.append(int(row["biceps_raw_adc"]))
+                brachio_env_adc.append(int(row["brachio_env_adc"]))
+                brachio_raw_adc.append(int(row["brachio_raw_adc"]))
                 labels.append(row["label"])
             except (KeyError, ValueError, TypeError):
                 # Tolerate a truncated final row (possible in an unfinalized
                 # .part file if the process died mid-write).
                 continue
-    return elapsed_s, env_adc, raw_adc, labels
+    return elapsed_s, biceps_env_adc, biceps_raw_adc, brachio_env_adc, brachio_raw_adc, labels
 
 
 def _read_events_csv(path: Path) -> list[dict]:
@@ -96,7 +102,14 @@ class SessionData:
         else:
             raise SessionLoadError(f"samples.csv를 찾을 수 없습니다: {self.session_dir}")
 
-        self.elapsed_s, self.env_adc, self.raw_adc, self.labels = _read_samples_csv(used_path)
+        (
+            self.elapsed_s,
+            self.biceps_env_adc,
+            self.biceps_raw_adc,
+            self.brachio_env_adc,
+            self.brachio_raw_adc,
+            self.labels,
+        ) = _read_samples_csv(used_path)
 
         events_path = self.session_dir / "events.csv"
         events_part_path = self.session_dir / "events.csv.part"
@@ -179,8 +192,20 @@ class SessionViewerDialog(QDialog):
             plot.setDownsampling(auto=True, mode="peak")
             plot.setClipToView(True)
 
-        raw_plot.plot(data.elapsed_s, data.raw_adc, pen=pg.mkPen(color="#4c8bf5", width=1))
-        env_plot.plot(data.elapsed_s, data.env_adc, pen=pg.mkPen(color="#f5a623", width=1))
+        raw_plot.addLegend()
+        env_plot.addLegend()
+        raw_plot.plot(
+            data.elapsed_s, data.biceps_raw_adc, pen=pg.mkPen(color="#4c8bf5", width=1), name="이두근 RAW"
+        )
+        raw_plot.plot(
+            data.elapsed_s, data.brachio_raw_adc, pen=pg.mkPen(color="#50e3c2", width=1), name="상완요골근 RAW"
+        )
+        env_plot.plot(
+            data.elapsed_s, data.biceps_env_adc, pen=pg.mkPen(color="#f5a623", width=1), name="이두근 ENV"
+        )
+        env_plot.plot(
+            data.elapsed_s, data.brachio_env_adc, pen=pg.mkPen(color="#bd10e0", width=1), name="상완요골근 ENV"
+        )
         self._add_event_markers(raw_plot, data.events)
         self._add_event_markers(env_plot, data.events)
 

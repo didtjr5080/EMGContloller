@@ -123,12 +123,12 @@ def test_plot_time_axis_stays_continuous_across_batches(qtbot, tmp_path):
 
     interval_us = 2000
     first_batch = [
-        UnwrappedSample(i * interval_us, i * interval_us, 100, 200, False, False)
+        UnwrappedSample(i * interval_us, i * interval_us, 100, 200, 300, 400, False, False)
         for i in range(20)
     ]
     window._on_batch_ready(first_batch)
     second_batch = [
-        UnwrappedSample(i * interval_us, i * interval_us, 100, 200, False, False)
+        UnwrappedSample(i * interval_us, i * interval_us, 100, 200, 300, 400, False, False)
         for i in range(20, 40)
     ]
     window._on_batch_ready(second_batch)
@@ -150,7 +150,7 @@ def test_pause_display_does_not_stop_sample_storage(qtbot, tmp_path):
 
     from emg_collector.acquisition.serial_worker import UnwrappedSample
 
-    batch = [UnwrappedSample(i * 2000, i * 2000, 100, 200, False, False) for i in range(5)]
+    batch = [UnwrappedSample(i * 2000, i * 2000, 100, 200, 300, 400, False, False) for i in range(5)]
     window._on_batch_ready(batch)
 
     assert window._sample_index == 5
@@ -170,7 +170,7 @@ def test_stop_recording_creates_files_and_resets_buttons(qtbot, tmp_path):
 
     from emg_collector.acquisition.serial_worker import UnwrappedSample
 
-    batch = [UnwrappedSample(i * 2000, i * 2000, 100, 200, False, False) for i in range(5)]
+    batch = [UnwrappedSample(i * 2000, i * 2000, 100, 200, 300, 400, False, False) for i in range(5)]
     window._on_batch_ready(batch)
 
     window._on_stop_recording()

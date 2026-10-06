@@ -7,21 +7,26 @@ an explicit request, since the parser and dataset schema depend on them.
 
 from __future__ import annotations
 
-APP_VERSION = "0.1.0"
-SCHEMA_VERSION = "1.0.0"
+APP_VERSION = "0.2.0"
+SCHEMA_VERSION = "2.0.0"
 
 DEFAULT_BAUD_RATE = 460800
 TARGET_SAMPLE_RATE_HZ = 500
 TARGET_SAMPLE_INTERVAL_US = 2000
 
-SERIAL_HEADER_LINE = "time_us,env,raw"
+# Two MyoWare 2.0 sensors: biceps (envelope + raw) and brachioradialis
+# (envelope + raw), 4 ADC channels in total per sample.
+SERIAL_HEADER_LINE = "time_us,biceps_env,biceps_raw,brachio_env,brachio_raw"
+SERIAL_FIELD_COUNT = 5  # time_us + 4 ADC channels
 
 ADC_RESOLUTION_BITS = 12
 ADC_MIN_VALUE = 0
 ADC_MAX_VALUE = 4095
 
-ENV_PIN = 33
-RAW_PIN = 34
+BICEPS_ENV_PIN = 33
+BICEPS_RAW_PIN = 34
+BRACHIO_ENV_PIN = 32
+BRACHIO_RAW_PIN = 35
 
 # 32-bit unsigned micros() rollover point.
 MICROS_WRAP_MODULUS = 2**32
@@ -69,8 +74,10 @@ SAMPLES_CSV_HEADER = [
     "device_time_us_unwrapped",
     "elapsed_s",
     "host_elapsed_s",
-    "env_adc",
-    "raw_adc",
+    "biceps_env_adc",
+    "biceps_raw_adc",
+    "brachio_env_adc",
+    "brachio_raw_adc",
     "label",
 ]
 

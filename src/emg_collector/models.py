@@ -116,8 +116,10 @@ class SampleRecord(BaseModel):
     device_time_us_unwrapped: int = Field(ge=0)
     elapsed_s: float = Field(ge=0)
     host_elapsed_s: float = Field(ge=0)
-    env_adc: int = Field(ge=0, le=4095)
-    raw_adc: int = Field(ge=0, le=4095)
+    biceps_env_adc: int = Field(ge=0, le=4095)
+    biceps_raw_adc: int = Field(ge=0, le=4095)
+    brachio_env_adc: int = Field(ge=0, le=4095)
+    brachio_raw_adc: int = Field(ge=0, le=4095)
     label: str
 
 

@@ -29,11 +29,13 @@ from PyQt6.QtWidgets import (
 )
 
 from emg_collector.config import (
+    BICEPS_ENV_PIN,
+    BICEPS_RAW_PIN,
+    BRACHIO_ENV_PIN,
+    BRACHIO_RAW_PIN,
     DEFAULT_BAUD_RATE,
     DEFAULT_LABEL,
     DEFAULT_LABELS,
-    ENV_PIN,
-    RAW_PIN,
     TARGET_SAMPLE_RATE_HZ,
 )
 
@@ -201,7 +203,10 @@ class AcquisitionPanel(QWidget):
         self.pain_score_spin.setValue(-1)
         self.session_notes_edit = QPlainTextEdit()
         self.sample_rate_label = QLabel(f"{TARGET_SAMPLE_RATE_HZ} Hz")
-        self.pins_label = QLabel(f"ENV: GPIO{ENV_PIN} / RAW: GPIO{RAW_PIN}")
+        self.pins_label = QLabel(
+            f"이두근 ENV: GPIO{BICEPS_ENV_PIN} / RAW: GPIO{BICEPS_RAW_PIN}  ·  "
+            f"상완요골근 ENV: GPIO{BRACHIO_ENV_PIN} / RAW: GPIO{BRACHIO_RAW_PIN}"
+        )
 
         form = QFormLayout()
         form.addRow("측정 부위/근육", self.muscle_combo)
@@ -219,7 +224,7 @@ class AcquisitionPanel(QWidget):
         form.addRow("통증 점수(0-10)", self.pain_score_spin)
         form.addRow("세션 설명", self.session_notes_edit)
         form.addRow("예상 샘플링 주파수", self.sample_rate_label)
-        form.addRow("ENV/RAW 핀", self.pins_label)
+        form.addRow("측정 센서 핀 (4개)", self.pins_label)
         self.session_group.setLayout(form)
 
     def session_field_values(self) -> SessionFieldValues:

@@ -46,9 +46,11 @@ from emg_collector.config import (
     ADC_MAX_VALUE,
     ADC_MIN_VALUE,
     APP_VERSION,
+    BICEPS_ENV_PIN,
+    BICEPS_RAW_PIN,
+    BRACHIO_ENV_PIN,
+    BRACHIO_RAW_PIN,
     DEFAULT_LABEL,
-    ENV_PIN,
-    RAW_PIN,
     SCHEMA_VERSION,
     SERIAL_HEADER_LINE,
     SESSION_STATUS_COMPLETE,
@@ -295,7 +297,13 @@ class MainWindow(QMainWindow):
             self._plot_first_unwrapped_us = batch[0].time_us_unwrapped
         base_t = self._plot_first_unwrapped_us
         times_s = [(s.time_us_unwrapped - base_t) / 1_000_000 for s in batch]
-        self.plot_panel.append_samples(times_s, [s.env for s in batch], [s.raw for s in batch])
+        self.plot_panel.append_samples(
+            times_s,
+            [s.biceps_env for s in batch],
+            [s.biceps_raw for s in batch],
+            [s.brachio_env for s in batch],
+            [s.brachio_raw for s in batch],
+        )
 
         if self._is_recording and self._session_writer is not None:
             self._write_recording_batch(batch)
@@ -328,7 +336,13 @@ class MainWindow(QMainWindow):
                 self._first_unwrapped_us = sample.time_us_unwrapped
             elapsed_s = (sample.time_us_unwrapped - self._first_unwrapped_us) / 1_000_000
             host_elapsed_s = max(time.monotonic() - host_start, 0.0)
-            self._quality.record_sample(sample.time_us_unwrapped, sample.env, sample.raw)
+            self._quality.record_sample(
+                sample.time_us_unwrapped,
+                sample.biceps_env,
+                sample.biceps_raw,
+                sample.brachio_env,
+                sample.brachio_raw,
+            )
             if sample.wrapped:
                 self._quality.record_wrap()
             records.append(
@@ -338,8 +352,10 @@ class MainWindow(QMainWindow):
                     device_time_us_unwrapped=sample.time_us_unwrapped,
                     elapsed_s=elapsed_s,
                     host_elapsed_s=host_elapsed_s,
-                    env_adc=sample.env,
-                    raw_adc=sample.raw,
+                    biceps_env_adc=sample.biceps_env,
+                    biceps_raw_adc=sample.biceps_raw,
+                    brachio_env_adc=sample.brachio_env,
+                    brachio_raw_adc=sample.brachio_raw,
                     label=self._current_label,
                 )
             )
@@ -450,8 +466,10 @@ class MainWindow(QMainWindow):
             "input_source": self._active_source_kind,
             "firmware_spec": {
                 "header": SERIAL_HEADER_LINE,
-                "env_pin": ENV_PIN,
-                "raw_pin": RAW_PIN,
+                "biceps_env_pin": BICEPS_ENV_PIN,
+                "biceps_raw_pin": BICEPS_RAW_PIN,
+                "brachio_env_pin": BRACHIO_ENV_PIN,
+                "brachio_raw_pin": BRACHIO_RAW_PIN,
                 "target_sample_rate_hz": TARGET_SAMPLE_RATE_HZ,
                 "target_sample_interval_us": TARGET_SAMPLE_INTERVAL_US,
                 "adc_min": ADC_MIN_VALUE,
@@ -466,8 +484,10 @@ class MainWindow(QMainWindow):
                     "device_time_us_unwrapped",
                     "elapsed_s",
                     "host_elapsed_s",
-                    "env_adc",
-                    "raw_adc",
+                    "biceps_env_adc",
+                    "biceps_raw_adc",
+                    "brachio_env_adc",
+                    "brachio_raw_adc",
                     "label",
                 ],
                 "events.csv": [

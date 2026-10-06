@@ -1,10 +1,11 @@
 """Simulated EMG signal source, usable with or without ESP32 hardware.
 
-Produces the exact same ``time_us,env,raw`` text lines the real ESP32
-firmware emits, so it can be fed through the same :class:`LineParser` and
-:class:`TimeUnwrapper` pipeline as a real serial connection. Error-injection
-toggles let tests (and a developer/test-mode UI panel) reproduce each
-failure scenario in section 8.2 of the work order on demand.
+Produces the exact same ``time_us,biceps_env,biceps_raw,brachio_env,brachio_raw``
+text lines the real (2-sensor) ESP32 firmware emits, so it can be fed
+through the same :class:`LineParser` and :class:`TimeUnwrapper` pipeline as
+a real serial connection. Error-injection toggles let tests (and a
+developer/test-mode UI panel) reproduce each failure scenario in section
+8.2 of the work order on demand.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ from emg_collector.config import (
     ADC_MAX_VALUE,
     ADC_MIN_VALUE,
     MICROS_WRAP_MODULUS,
-    RAW_PIN,
-    ENV_PIN,
     TARGET_SAMPLE_INTERVAL_US,
 )
 
@@ -101,25 +100,33 @@ class MockSampleSource:
 
     # -- generation --------------------------------------------------------
 
-    def _next_signal_values(self) -> tuple[int, int]:
+    def _next_signal_values(self) -> tuple[int, int, int, int]:
+        """Returns (biceps_env, biceps_raw, brachio_env, brachio_raw)."""
         if self._auto_burst_period_samples and (
             self._sample_count % self._auto_burst_period_samples == 0
         ):
             self.trigger_burst()
 
-        raw_noise = self._rng.gauss(0, 60)
         burst_signal = 0.0
         if self._burst_remaining > 0:
             phase = self._rng.random() * 2 * math.pi
             burst_signal = self._burst_amplitude * math.sin(phase) * self._rng.random()
             self._burst_remaining -= 1
 
-        raw_value = self._baseline_adc + raw_noise + burst_signal
-        env_value = self._baseline_adc + abs(burst_signal) * 0.6 + self._rng.gauss(0, 5)
+        # Biceps channel: full-strength burst response.
+        biceps_raw = self._baseline_adc + self._rng.gauss(0, 60) + burst_signal
+        biceps_env = self._baseline_adc + abs(burst_signal) * 0.6 + self._rng.gauss(0, 5)
 
-        raw_value = int(max(ADC_MIN_VALUE, min(ADC_MAX_VALUE, round(raw_value))))
-        env_value = int(max(ADC_MIN_VALUE, min(ADC_MAX_VALUE, round(env_value))))
-        return env_value, raw_value
+        # Brachioradialis channel: slightly different baseline/gain so the
+        # two channels are visually distinguishable even at rest.
+        brachio_baseline = self._baseline_adc * 0.9
+        brachio_raw = brachio_baseline + self._rng.gauss(0, 50) + burst_signal * 0.7
+        brachio_env = brachio_baseline + abs(burst_signal) * 0.45 + self._rng.gauss(0, 5)
+
+        def clip(value: float) -> int:
+            return int(max(ADC_MIN_VALUE, min(ADC_MAX_VALUE, round(value))))
+
+        return clip(biceps_env), clip(biceps_raw), clip(brachio_env), clip(brachio_raw)
 
     def next_line(self) -> str:
         """Return the next raw text line, or raise :class:`MockSourceDisconnected`."""
@@ -134,7 +141,7 @@ class MockSampleSource:
             # timestamp has already skipped one interval, simulating a
             # dropped sample the receiver never saw.
 
-        env_value, raw_value = self._next_signal_values()
+        biceps_env, biceps_raw, brachio_env, brachio_raw = self._next_signal_values()
         self._sample_count += 1
 
         if self._pending_wrap:
@@ -149,16 +156,16 @@ class MockSampleSource:
 
         if self._pending_out_of_range:
             self._pending_out_of_range = False
-            return f"{time_us},{ADC_MAX_VALUE + 1},{raw_value}"
+            return f"{time_us},{ADC_MAX_VALUE + 1},{biceps_raw},{brachio_env},{brachio_raw}"
 
         if self._pending_duplicate_timestamp:
             self._pending_duplicate_timestamp = False
             time_us = max(time_us - self.sample_interval_us, 0)
 
-        return f"{time_us},{env_value},{raw_value}"
+        return f"{time_us},{biceps_env},{biceps_raw},{brachio_env},{brachio_raw}"
 
     def header_line(self) -> str:
-        return "time_us,env,raw"
+        return "time_us,biceps_env,biceps_raw,brachio_env,brachio_raw"
 
 
 class RealtimePacedLineSource:

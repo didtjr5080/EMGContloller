@@ -49,21 +49,34 @@ class SerialPortLineSource:
 
 
 class UnwrappedSample:
-    __slots__ = ("time_us", "time_us_unwrapped", "env", "raw", "wrapped", "regression")
+    __slots__ = (
+        "time_us",
+        "time_us_unwrapped",
+        "biceps_env",
+        "biceps_raw",
+        "brachio_env",
+        "brachio_raw",
+        "wrapped",
+        "regression",
+    )
 
     def __init__(
         self,
         time_us: int,
         time_us_unwrapped: int,
-        env: int,
-        raw: int,
+        biceps_env: int,
+        biceps_raw: int,
+        brachio_env: int,
+        brachio_raw: int,
         wrapped: bool,
         regression: bool,
     ) -> None:
         self.time_us = time_us
         self.time_us_unwrapped = time_us_unwrapped
-        self.env = env
-        self.raw = raw
+        self.biceps_env = biceps_env
+        self.biceps_raw = biceps_raw
+        self.brachio_env = brachio_env
+        self.brachio_raw = brachio_raw
         self.wrapped = wrapped
         self.regression = regression
 
@@ -118,8 +131,10 @@ class SerialWorker(QObject):
                         UnwrappedSample(
                             time_us=parsed.time_us,
                             time_us_unwrapped=result.value_us,
-                            env=parsed.env,
-                            raw=parsed.raw,
+                            biceps_env=parsed.biceps_env,
+                            biceps_raw=parsed.biceps_raw,
+                            brachio_env=parsed.brachio_env,
+                            brachio_raw=parsed.brachio_raw,
                             wrapped=result.wrapped,
                             regression=result.regression,
                         )
