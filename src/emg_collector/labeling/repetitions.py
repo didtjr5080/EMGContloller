@@ -42,6 +42,8 @@ class RepetitionDetector:
             target = "concentric"
         elif self.phase == "concentric" and angle <= self.p.top_angle_deg:
             target = "top"
+        elif self.phase == "concentric" and angle >= self.p.start_angle_deg:
+            target = "return_before_top"
         elif (
             self.phase == "top" and angle > self.p.top_angle_deg + self.p.hysteresis_deg
         ):
@@ -52,6 +54,9 @@ class RepetitionDetector:
             if self.candidate is None or self.candidate[0] != target:
                 self.candidate = (target, ns)
             if ns - self.candidate[1] >= self.p.debounce_ns:
+                if target == "return_before_top":
+                    self.reasons.add("return_before_top")
+                    return self.finish(ns)
                 if target == "concentric":
                     self.start_ns = self.candidate[1]
                     self.angles = [self.p.start_angle_deg]

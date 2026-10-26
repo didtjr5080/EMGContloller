@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from queue import Queue, Full
 from threading import Thread
@@ -54,6 +55,7 @@ STREAMS = {
         "set_number",
         "exercise",
         "load_kg",
+        "dumbbell_count",
         "rest_before_s",
         "target_repetitions",
         "start_ns",
@@ -189,7 +191,14 @@ def build_manifest(root, video_required, status="complete", failures=None):
 
 
 class MultimodalWriter:
-    def __init__(self, root, metadata, video_required=False, queue_size=20_000):
+    def __init__(
+        self,
+        root,
+        metadata,
+        video_required=False,
+        queue_size=20_000,
+        shutdown_timeout_s=5,
+    ):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=False)
         self.video_required = video_required
@@ -198,6 +207,7 @@ class MultimodalWriter:
         self.error = None
         self.overflow_count = 0
         self.closed = False
+        self.shutdown_timeout_s = shutdown_timeout_s
         atomic_json(self.root / "metadata.json", metadata)
         atomic_json(
             self.root / "completion_manifest.json",
@@ -259,21 +269,27 @@ class MultimodalWriter:
 
     def _close(self):
         if self.closed:
-            return
+            return not self.thread.is_alive()
         self.closed = True
-        while self.thread.is_alive():
+        deadline = time.monotonic() + self.shutdown_timeout_s
+        while self.thread.is_alive() and time.monotonic() < deadline:
             try:
                 self.queue.put(None, timeout=0.1)
                 break
             except Full:
                 pass
-        self.thread.join()
+        self.thread.join(timeout=max(0, deadline - time.monotonic()))
+        if self.thread.is_alive():
+            self.error = "writer_shutdown_timeout; original .part files retained"
+            return False
+        return True
 
     def close_incomplete(self):
-        self._close()
+        return self._close()
 
     def finalize(self, sync, quality, failures=None):
-        self._close()
+        if not self._close():
+            raise TimeoutError(self.error)
         errors = list(failures or [])
         if self.error:
             errors.append(self.error)

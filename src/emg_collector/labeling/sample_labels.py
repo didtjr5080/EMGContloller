@@ -5,6 +5,7 @@ import json
 import os
 from bisect import bisect_right
 from pathlib import Path
+from emg_collector.sync.clock_alignment import map_sample, load_clock_mappings
 
 from emg_collector.labeling.review import (
     effective_review,
@@ -21,6 +22,10 @@ LABEL_COLUMNS = [
     "device_time_us",
     "unwrapped_time_us",
     "host_receive_ns",
+    "measurement_host_ns",
+    "alignment_status",
+    "alignment_uncertainty_ns",
+    "mapping_version",
     "biceps_env_adc",
     "biceps_raw_adc",
     "triceps_env_adc",
@@ -45,7 +50,17 @@ LABEL_COLUMNS = [
 
 
 def labeled_rows(
-    samples, poses, sets, attempts, max_gap_ns, *, synthetic=False, revision="automatic"
+    samples,
+    poses,
+    sets,
+    attempts,
+    max_gap_ns,
+    *,
+    synthetic=False,
+    revision="automatic",
+    clock_mappings=None,
+    allow_unverified=False,
+    max_uncertainty_ns=50_000_000,
 ):
     poses = sorted(poses, key=lambda p: int(p["capture_host_ns"]))
     times = [int(p["capture_host_ns"]) for p in poses]
@@ -54,15 +69,22 @@ def labeled_rows(
     attempts = sorted(attempts, key=lambda a: a.start_ns)
     attempt_starts = [a.start_ns for a in attempts]
     for sample in samples:
-        ns = int(sample["host_receive_ns"])
-        set_index = bisect_right(set_starts, ns) - 1
+        alignment = map_sample(
+            sample, clock_mappings or {}, max_uncertainty_ns=max_uncertainty_ns
+        )
+        ns = (
+            alignment["measurement_host_ns"]
+            if alignment["alignment_status"] == "aligned" or allow_unverified
+            else None
+        )
+        set_index = bisect_right(set_starts, ns) - 1 if ns is not None else -1
         record = sets[set_index] if set_index >= 0 else None
         if record and (record.end_ns is None or ns > record.end_ns):
             record = None
-        index = bisect_right(times, ns) - 1
+        index = bisect_right(times, ns) - 1 if ns is not None else -1
         pose = poses[index] if index >= 0 and ns - times[index] <= max_gap_ns else None
         pose_valid = bool(pose and pose["quality_mask"] == "ok")
-        attempt_index = bisect_right(attempt_starts, ns) - 1
+        attempt_index = bisect_right(attempt_starts, ns) - 1 if ns is not None else -1
         attempt = attempts[attempt_index] if attempt_index >= 0 else None
         if attempt and (
             record is None or attempt.set_id != record.set_id or ns > attempt.end_ns
@@ -73,6 +95,7 @@ def labeled_rows(
             phases = [(at, name) for name, at in attempt.phases.items() if at <= ns]
             phase = max(phases)[1] if phases else "unknown"
         yield {
+            **alignment,
             **{
                 key: sample[key]
                 for key in (
@@ -105,7 +128,11 @@ def labeled_rows(
                 if revision == "automatic"
                 else "reviewed_mediapipe_pose"
             ),
-            "label_status": record.review_status if record else "provisional",
+            "label_status": (
+                (record.review_status if record else "provisional")
+                if alignment["alignment_status"] == "aligned"
+                else "alignment_unverified"
+            ),
             "label_revision": revision,
             "synthetic": synthetic,
         }
@@ -114,6 +141,9 @@ def labeled_rows(
 def write_labeled_samples(root, output=None, *, reviewed=False):
     root = Path(root)
     metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+    from emg_collector.quality.window import QualityPolicy
+
+    policy = QualityPolicy.model_validate(metadata.get("quality_policy", {}))
     if (
         metadata.get("schema_version") != "3.0.0"
         or metadata.get("profile") != "biceps_triceps_v3"
@@ -148,6 +178,8 @@ def write_labeled_samples(root, output=None, *, reviewed=False):
             metadata["protocol"]["max_pose_gap_ns"],
             synthetic=metadata["synthetic"],
             revision=revision,
+            clock_mappings=load_clock_mappings(root),
+            max_uncertainty_ns=policy.maximum_uncertainty_ns,
         ):
             writer.writerow(row)
             count += 1

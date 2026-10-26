@@ -151,6 +151,7 @@ class SetRecord(Record):
     set_number: int = Field(ge=1)
     exercise: str = "unilateral_dumbbell_curl"
     load_kg: float = Field(ge=0)
+    dumbbell_count: int = Field(default=1, ge=1)
     rest_before_s: float | None = Field(default=None, ge=0)
     target_repetitions: int | None = Field(default=None, ge=0)
     start_ns: int = Field(ge=0)

@@ -12,6 +12,8 @@ from emg_collector.protocols import PilotProtocol
 from emg_collector.storage.dataset_store import DatasetStore
 from emg_collector.storage.multimodal_writer import MultimodalWriter
 from emg_collector.sync.clock_alignment import fit_clock
+from emg_collector.labeling.review_contract import evidence_context
+from emg_collector.quality.window import QualityPolicy
 
 
 def create(root):
@@ -34,6 +36,8 @@ def create(root):
     origin = 1_000_000_000
     metadata = {
         "schema_version": "3.0.0",
+        "alignment_version": "alignment-1",
+        "quality_policy": QualityPolicy().model_dump(),
         "session_id": "M_SYNTH01",
         "participant_id": participant.participant_id,
         "participant": participant.model_dump(mode="json"),
@@ -184,7 +188,29 @@ def create(root):
     )
     writer.submit("sets.csv", record.model_dump(mode="json"))
     writer.finalize(
-        {"method": "synthetic_known_clock", "epochs": {"0": fit_clock(observations)}},
+        {
+            "method": "synthetic_known_clock",
+            "alignment_version": "alignment-1",
+            "epochs": {
+                "0": [
+                    {
+                        "epoch_id": 0,
+                        "mapping_version": "alignment-1:fixture-e0",
+                        "method": "synthetic_reference",
+                        "status": "validated",
+                        "offset_ns": origin,
+                        "drift_ppm": 0,
+                        "uncertainty_ns": 0,
+                        "latency_bias_ns": 0,
+                        "available_host_ns": origin,
+                        "fit_scope": "causal",
+                        "valid_from_device_us": 0,
+                        "valid_to_device_us": 48_000_000,
+                    }
+                ]
+            },
+            "posthoc_receive_fits": {"0": fit_clock(observations)},
+        },
         {
             "synthetic": True,
             "valid_samples": 24001,
@@ -193,13 +219,18 @@ def create(root):
             "actual_fps": 10,
         },
     )
-    append_review(
+    context = evidence_context(writer.root, verify_video=True)
+    first = append_review(
         writer.root,
         "SYNTH-reviewer-1",
         "synthetic fixture assessment",
         [record],
         attempts,
         True,
+        mode="independent",
+        expected_revision=None,
+        base_revision="acquisition",
+        evidence=context,
     )
     append_review(
         writer.root,
@@ -208,6 +239,10 @@ def create(root):
         [record],
         attempts,
         True,
+        mode="independent",
+        expected_revision=first["revision"],
+        base_revision="acquisition",
+        evidence=context,
     )
     store.append_session_row(
         {

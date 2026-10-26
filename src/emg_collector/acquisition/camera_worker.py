@@ -93,7 +93,8 @@ def capture_loop(controller):
                 if not ok:
                     raise RuntimeError("camera disconnected/read failed")
                 landmarks = None
-            captured = time.monotonic_ns()
+            captured = controller.clock_ns()
+            controller.last_frame_ns = captured
             height, width = frame.shape[:2]
             if video_part and encoder is None:
                 encoder = cv2.VideoWriter(

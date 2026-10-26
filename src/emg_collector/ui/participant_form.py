@@ -53,8 +53,16 @@ class ParticipantValidationResult:
 class ParticipantForm(QWidget):
     changed = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        required_only=False,
+        single_measurement=False,
+    ) -> None:
         super().__init__(parent)
+        self.required_only = required_only
+        self.single_measurement = single_measurement
 
         self.participant_id_edit = QLineEdit(generate_participant_id())
         self.regenerate_id_button = QPushButton("새 ID 생성")
@@ -116,8 +124,37 @@ class ParticipantForm(QWidget):
         id_row = QHBoxLayout()
         id_row.addWidget(self.participant_id_edit)
         id_row.addWidget(self.regenerate_id_button)
-        form.addRow("피험자 ID *", id_row)
-        self._add_error_row(form, "participant_id")
+        if not self.single_measurement:
+            form.addRow("피험자 ID *", id_row)
+            self._add_error_row(form, "participant_id")
+        else:
+            form.addRow("이름 (식별용)", self.name_edit)
+            self.name_edit.setPlaceholderText("이름 입력")
+            self._add_error_row(form, "name")
+
+        if self.required_only:
+            for title, widget, key in [
+                ("나이 *", self.age_spin, "age"),
+                ("키 *", self.height_spin, "height_cm"),
+                (
+                    "주당 운동 횟수 *",
+                    self.exercise_sessions_spin,
+                    "exercise_sessions_per_week",
+                ),
+                (
+                    "최근 운동 후(일) *",
+                    self.days_since_exercise_spin,
+                    "days_since_last_exercise",
+                ),
+            ]:
+                form.addRow(title, widget)
+                self._add_error_row(form, key)
+            form.addRow(self.consent_checkbox)
+            wrap_form_labels(form)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addLayout(form)
+            return
 
         form.addRow("이름 (선택, private 저장)", self.name_edit)
         self._add_error_row(form, "name")
@@ -156,7 +193,11 @@ class ParticipantForm(QWidget):
         label = QLabel("")
         label.setStyleSheet("color: #d64545;")
         self._error_labels[field_name] = label
-        form.addRow("", label)
+        if self.required_only:
+            form.addRow(label)
+            label.hide()
+        else:
+            form.addRow("", label)
 
     def _connect_signals(self) -> None:
         self.regenerate_id_button.clicked.connect(
@@ -207,6 +248,22 @@ class ParticipantForm(QWidget):
 
     def build_models(self) -> tuple[ParticipantPrivate | None, ParticipantPublic]:
         """Raise pydantic.ValidationError if the current input is invalid."""
+        if self.required_only:
+            private = (
+                ParticipantPrivate(
+                    participant_id=self.participant_id_edit.text().strip(),
+                    name=self.name_edit.text().strip(),
+                )
+                if self.single_measurement and self.name_edit.text().strip()
+                else None
+            )
+            return private, ParticipantPublic(
+                participant_id=self.participant_id_edit.text().strip(),
+                age=self.age_spin.value(),
+                height_cm=self.height_spin.value(),
+                exercise_sessions_per_week=self.exercise_sessions_spin.value(),
+                days_since_last_exercise=self.days_since_exercise_spin.value(),
+            )
         private = (
             ParticipantPrivate(
                 participant_id=self.participant_id_edit.text().strip(),
@@ -242,6 +299,8 @@ class ParticipantForm(QWidget):
     def validate(self) -> ParticipantValidationResult:
         for label in self._error_labels.values():
             label.setText("")
+            if self.required_only:
+                label.hide()
         for widget in self._field_widgets.values():
             widget.setStyleSheet(NORMAL_STYLE)
 
@@ -254,6 +313,7 @@ class ParticipantForm(QWidget):
                 errors[field_name] = err["msg"]
                 if field_name in self._error_labels:
                     self._error_labels[field_name].setText(err["msg"])
+                    self._error_labels[field_name].show()
                 if field_name in self._field_widgets:
                     self._field_widgets[field_name].setStyleSheet(ERROR_STYLE)
             return ParticipantValidationResult(is_valid=False, field_errors=errors)

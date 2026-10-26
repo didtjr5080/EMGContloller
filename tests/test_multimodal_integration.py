@@ -13,6 +13,7 @@ from emg_collector.labeling.review import (
     append_review,
     effective_review,
     review_history,
+    read_sets,
 )
 from emg_collector.models import ParticipantPublic
 from emg_collector.multimodal.controller import CollectionController
@@ -49,11 +50,18 @@ def test_synthetic_review_and_causal_training(synthetic_dataset, tmp_path):
     assert effective_review(root)[0][0].review_status == "confirmed"
     output = tmp_path / "training"
     assert (
-        export_training(synthetic_dataset, output, synthetic=True, allow_pilot=True)[
-            "examples"
-        ]
+        export_training(
+            synthetic_dataset,
+            output,
+            synthetic=True,
+            allow_pilot=True,
+            include_load=True,
+        )["examples"]
         == 15
     )
+    with (output / "tabular_features.csv").open() as fh:
+        feature = next(csv.DictReader(fh))
+    assert float(feature["load_kg"]) == 5 and int(feature["dumbbell_count"]) == 1
     with (output / "index.csv").open() as fh:
         rows = list(csv.DictReader(fh))
     assert [int(rows[i - 1]["remaining_valid_reps"]) for i in (10, 14, 15)] == [5, 1, 0]
@@ -144,7 +152,8 @@ def test_late_inference_is_not_available_at_prediction(synthetic_dataset, tmp_pa
         copied, tmp_path / "late_export", synthetic=True, allow_pilot=True
     )
     assert result["examples"] == 0
-    assert result["excluded"]["missing_motion_common_evaluation"] == 15
+    # Changing inference evidence invalidates the old independent assessments.
+    assert result["excluded_sessions"]["unreviewed"] == 1
 
 
 def test_confirmed_label_rejects_missing_video_consent(synthetic_dataset, tmp_path):
@@ -260,8 +269,10 @@ def test_realtime_workers_finalize_video_and_emg(tmp_path):
         synthetic=True,
         placement="synthetic biceps/triceps",
         mock_receive_batch_delay_ms=10,
-        skin_prepared=True,
-        clothing_confirmed=True,
+        load_kg=5.5,
+        dumbbell_count=2,
+        skin_prepared=False,
+        clothing_confirmed=False,
     )
     c.start()
     assert c.started.wait(3)
@@ -270,10 +281,22 @@ def test_realtime_workers_finalize_video_and_emg(tmp_path):
     assert c.done.wait(8)
     assert c.errors == []
     assert c.sample_count > 0 and c.frame_count > 0
+    saved_set = read_sets(c.writer.root)[0]
+    assert saved_set.load_kg == 5.5 and saved_set.dumbbell_count == 2
+    assert json.loads((c.writer.root / "metadata.json").read_text())["equipment"] == {
+        "load_kg_per_dumbbell": 5.5,
+        "dumbbell_count": 2,
+    }
+    saved_metadata = json.loads((c.writer.root / "metadata.json").read_text())
+    assert saved_metadata["preparation_confirmation"] == "not_confirmed"
+    assert saved_metadata["clothing_confirmed"] is False
+    assert all(
+        channel["skin_prepared"] is False for channel in saved_metadata["channels"]
+    )
     assert validate_session(c.writer.root) == []
 
 
-def test_anonymous_zero_minutes_and_v3_dialog(qtbot, tmp_path):
+def test_anonymous_v3_dialog_excludes_optional_minutes(qtbot, tmp_path):
     from emg_collector.ui.multimodal_panel import MultimodalDialog
 
     dialog = MultimodalDialog(DatasetStore(tmp_path / "ui"))
@@ -283,7 +306,7 @@ def test_anonymous_zero_minutes_and_v3_dialog(qtbot, tmp_path):
     form.height_spin.setValue(170)
     form.exercise_minutes_spin.setValue(0)
     private, public = form.build_models()
-    assert private is None and public.exercise_minutes_per_week == 0
+    assert private is None and public.exercise_minutes_per_week is None
     form.exercise_minutes_spin.setValue(-1)
     assert form.build_models()[1].exercise_minutes_per_week is None
 

@@ -9,6 +9,14 @@ from emg_collector.multimodal.schema import Sample, channels, Consent, Visit, re
 from emg_collector.models import ParticipantPublic
 from emg_collector.protocols import PilotProtocol
 from emg_collector.storage.multimodal_writer import STREAMS, file_info, video_playable
+from emg_collector.labeling.validation import validate_annotations
+from emg_collector.labeling.review_contract import (
+    TRANSACTION,
+    confirmation_valid,
+    evidence_context,
+)
+from emg_collector.sync.clock_alignment import aligned_samples, load_clock_mappings
+from emg_collector.quality.window import window_quality, QualityPolicy
 
 
 def validate_session(root):
@@ -212,7 +220,10 @@ def validate_session(root):
                         )
                     elif (
                         not 0
-                        <= int(label["host_receive_ns"]) - capture
+                        <= int(
+                            label.get("measurement_host_ns") or label["host_receive_ns"]
+                        )
+                        - capture
                         <= m["protocol"]["max_pose_gap_ns"]
                     ):
                         error(
@@ -222,7 +233,8 @@ def validate_session(root):
                 if (
                     label["label_source"] != "mediapipe_pose"
                     or label["label_revision"] != "automatic"
-                    or label["label_status"] != "provisional"
+                    or label["label_status"]
+                    not in ("provisional", "alignment_unverified")
                 ):
                     error(
                         "labeled_samples",
@@ -231,6 +243,9 @@ def validate_session(root):
                 if label["pose_valid"] != "True" and label["phase"] != "unknown":
                     error("labeled_samples/phase", "missing tracking must be unknown")
         sets, attempts = effective_review(root)
+        validate_annotations(sets, attempts)
+        if (root / TRANSACTION).exists():
+            error("review_transaction", "pending review save; recovery required")
         own = {s.set_id: s for s in sets}
         if not own or len(own) != len(sets):
             error("sets", "missing or duplicate set IDs")
@@ -253,6 +268,16 @@ def validate_session(root):
             if any(t < a.start_ns or t > a.end_ns for t in a.phases.values()):
                 error(f"repetitions/{a.attempt_id}", "phase outside attempt boundaries")
         history = review_history(root)
+        expected_confirmed = (
+            bool(history)
+            and not (root / TRANSACTION).exists()
+            and confirmation_valid(history[-1], history, evidence_context(root))
+        )
+        if bool(manifest.get("labels_confirmed")) != expected_confirmed:
+            error(
+                "review/labels_confirmed",
+                "manifest and effective independent review disagree",
+            )
         for s in sets:
             if s.failure_attempt_id and s.failure_attempt_id not in seen:
                 error(f"sets/{s.set_id}/failure_attempt_id", "unknown attempt")
@@ -266,10 +291,7 @@ def validate_session(root):
                     "confirmed failure lacks definite evidence/valid failed attempt",
                 )
             if s.review_status == "confirmed":
-                if (
-                    len(history) < 2
-                    or history[-1]["reviewer_id"] == history[-2]["reviewer_id"]
-                ):
+                if not expected_confirmed:
                     error(
                         f"sets/{s.set_id}/review",
                         "two different reviewer revisions required",
@@ -294,3 +316,29 @@ def validate_session(root):
     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
         error("schema", f"{type(exc).__name__}: {exc}")
     return errors
+
+
+def inspect_session(root, quality_policy=None):
+    """Keep the legacy integrity list API while exposing separate quality state."""
+    root = Path(root)
+    errors = validate_session(root)
+    report = {"integrity_errors": errors, "quality": None}
+    try:
+        metadata = json.loads((root / "metadata.json").read_text(encoding="utf-8"))
+        policy = QualityPolicy.model_validate(
+            quality_policy
+            if quality_policy is not None
+            else metadata.get("quality_policy", {})
+        )
+        samples = aligned_samples(
+            read_csv(root, "samples.csv"),
+            load_clock_mappings(root),
+            max_uncertainty_ns=policy.maximum_uncertainty_ns,
+        )
+        sets, _ = effective_review(root)
+        start = min(s.start_ns for s in sets)
+        end = max(s.end_ns for s in sets if s.end_ns is not None)
+        report["quality"] = window_quality(samples, start, end, policy)
+    except (OSError, ValueError, KeyError, TypeError):
+        report["quality"] = {"eligible": False, "reasons": ["quality_unavailable"]}
+    return report

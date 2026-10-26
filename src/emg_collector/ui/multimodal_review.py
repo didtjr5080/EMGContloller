@@ -14,20 +14,37 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QLabel,
     QLineEdit,
+    QAbstractItemView,
+    QPlainTextEdit,
+    QHBoxLayout,
     QScrollArea,
     QSizePolicy,
     QPushButton,
     QSlider,
     QSplitter,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from emg_collector.labeling.review import append_review, effective_review, read_csv
-from emg_collector.multimodal.schema import Attempt, Termination
+from emg_collector.labeling.review import (
+    append_review,
+    effective_review,
+    read_csv,
+    read_sets,
+    read_attempts,
+    review_history,
+)
+from emg_collector.labeling.review_contract import (
+    evidence_context,
+    disagreement_fields,
+    recover_review_transaction,
+)
+from emg_collector.sync.clock_alignment import aligned_samples, load_clock_mappings
+from emg_collector.quality.window import QualityPolicy
+from emg_collector.multimodal.schema import Termination
 from emg_collector.ui.multimodal_panel import set_frame
+from emg_collector.ui.review_editing import ReviewEditing
 from emg_collector.ui.common import (
     TERMINATION_LABELS,
     VideoPreview,
@@ -41,9 +58,10 @@ class ReviewSignals(QObject):
     loaded = pyqtSignal(dict)
     frame = pyqtSignal(object)
     message = pyqtSignal(str)
+    saved = pyqtSignal(dict)
 
 
-class MultimodalReviewDialog(QDialog):
+class MultimodalReviewDialog(ReviewEditing, QDialog):
     def __init__(self, root, parent=None):
         super().__init__(parent)
         self.root = Path(root)
@@ -53,9 +71,11 @@ class MultimodalReviewDialog(QDialog):
         self.signals.loaded.connect(self._loaded)
         self.signals.frame.connect(lambda frame: set_frame(self.video, frame))
         self.signals.message.connect(self._message)
+        self.signals.saved.connect(self._saved)
         self.seek_queue = Queue(maxsize=1)
         self.stop_event = Event()
         self.data = None
+        self.edit_operations = []
         self.status = QLabel("세션 로딩 중...")
         self.status.setWordWrap(True)
         self.status.setSizePolicy(
@@ -77,6 +97,9 @@ class MultimodalReviewDialog(QDialog):
         self.slider.valueChanged.connect(self._seek)
         self.table = QTableWidget(0, 7)
         self.table.setMinimumHeight(100)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.itemChanged.connect(self._sync_failure)
         self.table.setHorizontalHeaderLabels(
             [
                 "attempt_id",
@@ -102,6 +125,18 @@ class MultimodalReviewDialog(QDialog):
         self.adjudication = WrappingCheckBox(
             "이전 독립 판정과 불일치 조정 완료 (이유 필수)"
         )
+        self.mode = QComboBox()
+        self.mode.addItem("독립 판정 (원 자동 결과에서 시작)", "independent")
+        self.mode.addItem("불일치 조정 (두 독립 평가 비교)", "adjudication")
+        self.mode.addItem("초안 / 미완료 평가", "draft")
+        self.assessment_a = QComboBox()
+        self.assessment_b = QComboBox()
+        self.comparison = QPlainTextEdit()
+        self.comparison.setReadOnly(True)
+        self.comparison.setMaximumHeight(160)
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        self.assessment_a.currentIndexChanged.connect(self._mode_changed)
+        self.assessment_b.currentIndexChanged.connect(self._mode_changed)
         self.save_button = QPushButton("판정 revision 저장")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save)
@@ -113,6 +148,9 @@ class MultimodalReviewDialog(QDialog):
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for label, widget in [
+            ("검토 모드", self.mode),
+            ("비교 평가 1", self.assessment_a),
+            ("비교 평가 2", self.assessment_b),
             ("종료 사유", self.reason),
             ("최초 기술적 실패 시도", self.failure),
             ("검토자", self.reviewer),
@@ -141,6 +179,25 @@ class MultimodalReviewDialog(QDialog):
         review_controls = QWidget()
         controls_layout = QVBoxLayout(review_controls)
         controls_layout.addLayout(form)
+        controls_layout.addWidget(self.comparison)
+        self.edit_bar = QWidget()
+        edit_layout = QHBoxLayout(self.edit_bar)
+        for text, operation in (
+            ("시도 추가", "add"),
+            ("삭제", "delete"),
+            ("분할", "split"),
+            ("병합", "merge"),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(lambda checked=False, op=operation: self._edit(op))
+            edit_layout.addWidget(button)
+        controls_layout.addWidget(self.edit_bar)
+        self.reload_button = QPushButton("판정 다시 불러오기")
+        self.reload_button.clicked.connect(self._reload_review)
+        self.recover_button = QPushButton("중단된 검토 저장 복구")
+        self.recover_button.clicked.connect(lambda: self._reload_review(recover=True))
+        controls_layout.addWidget(self.reload_button)
+        controls_layout.addWidget(self.recover_button)
         controls_layout.addWidget(self.save_button)
         controls_layout.addWidget(self.labels_button)
         controls_layout.addWidget(self.status)
@@ -159,9 +216,16 @@ class MultimodalReviewDialog(QDialog):
         layout.addWidget(self.sections)
         self.save_thread = None
 
+        self._reload_review()
+        self.decoder_thread = Thread(target=self._decoder, daemon=True)
+        self.decoder_thread.start()
+
+    def _reload_review(self, checked=False, recover=False):
         def load():
             try:
-                sets, attempts = effective_review(self.root)
+                if recover:
+                    recover_review_transaction(self.root)
+                sets, attempts = read_sets(self.root), read_attempts(self.root)
                 if len(sets) != 1:
                     raise ValueError("현재 검토 UI는 세션당 1개 세트를 지원합니다.")
                 metadata = json.loads(
@@ -175,6 +239,17 @@ class MultimodalReviewDialog(QDialog):
                         "samples": read_csv(self.root, "samples.csv"),
                         "metrics": read_csv(self.root, "pose_metrics.csv"),
                         "frames": read_csv(self.root, "frame_timestamps.csv"),
+                        "history": review_history(self.root),
+                        "evidence": evidence_context(self.root),
+                        "aligned_samples": aligned_samples(
+                            read_csv(self.root, "samples.csv"),
+                            load_clock_mappings(self.root),
+                            max_uncertainty_ns=QualityPolicy.model_validate(
+                                metadata.get("quality_policy", {})
+                            ).maximum_uncertainty_ns,
+                        ),
+                        "effective_sets": effective_review(self.root)[0],
+                        "effective_attempts": effective_review(self.root)[1],
                     }
                 )
             except Exception as exc:
@@ -182,23 +257,41 @@ class MultimodalReviewDialog(QDialog):
 
         self.load_thread = Thread(target=load, daemon=True)
         self.load_thread.start()
-        self.decoder_thread = Thread(target=self._decoder, daemon=True)
-        self.decoder_thread.start()
 
     def _loaded(self, data):
         self.data = data
+        self.expected_revision = (
+            data["history"][-1]["revision"] if data["history"] else None
+        )
+        self.current_evidence = data["evidence"]
         record = data["sets"][0]
         self.origin = data["metadata"]["start_host_ns"]
         self.end = record.end_ns or self.origin + 1
-        samples = data["samples"]
+        samples = [
+            r for r in data["aligned_samples"] if r["measurement_host_ns"] is not None
+        ]
+        verified = bool(samples) and all(
+            r["alignment_status"] == "aligned" for r in samples
+        )
+        self.emg.setTitle(
+            "RAW EMG ADC — "
+            + (
+                "측정 시각 정렬"
+                if verified
+                else "정렬 미검증: 추정 시간축, 물리 동기 확인 필요"
+            )
+        )
+        for plot, cursor in zip((self.emg, self.angle), self.cursors):
+            plot.clear()
+            plot.addItem(cursor)
         metrics = data["metrics"]
         self.emg.plot(
-            [(int(s["host_receive_ns"]) - self.origin) / 1e9 for s in samples],
+            [(int(s["measurement_host_ns"]) - self.origin) / 1e9 for s in samples],
             [int(s["s1_raw"]) for s in samples],
             pen="#50aaff",
         )
         self.emg.plot(
-            [(int(s["host_receive_ns"]) - self.origin) / 1e9 for s in samples],
+            [(int(s["measurement_host_ns"]) - self.origin) / 1e9 for s in samples],
             [int(s["s2_raw"]) for s in samples],
             pen="#ffaa50",
         )
@@ -208,43 +301,8 @@ class MultimodalReviewDialog(QDialog):
             [float(m["elbow_angle_deg"]) for m in valid],
             pen="#66dd88",
         )
-        self.table.setRowCount(len(data["attempts"]))
-        for i, a in enumerate(data["attempts"]):
-            values = [
-                a.attempt_id,
-                a.start_ns,
-                a.end_ns,
-                a.validity,
-                json.dumps(a.reasons),
-                a.rom_deg if a.rom_deg is not None else "",
-                json.dumps(a.phases),
-            ]
-            for j, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                if j == 0:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(i, j, item)
-            self.failure.addItem(a.attempt_id, a.attempt_id)
-        self.reason.setCurrentIndex(
-            max(
-                0,
-                self.reason.findData(
-                    record.termination_reason.value
-                    if record.termination_reason
-                    else "other"
-                ),
-            )
-        )
-        self.failure.setCurrentIndex(
-            max(
-                0,
-                self.failure.findData(
-                    "__none__"
-                    if record.failure_attempt_observed is False
-                    else record.failure_attempt_id
-                ),
-            )
-        )
+        self._populate_assessments(data["history"])
+        self._render(data["sets"], data["attempts"])
         self.save_button.setEnabled(True)
         self.labels_button.setEnabled(True)
         self.video_allowed = bool(
@@ -256,6 +314,7 @@ class MultimodalReviewDialog(QDialog):
         self.status.setText(
             "자동 판정은 provisional입니다. PILOT은 서로 다른 2명의 독립 판정 후 일치/조정 시 확정됩니다."
         )
+        self._mode_changed()
         self._seek(0)
 
     def _seek(self, value):
@@ -316,41 +375,32 @@ class MultimodalReviewDialog(QDialog):
 
     def _save(self):
         try:
-            attempts = []
-            for i in range(self.table.rowCount()):
-                values = [self.table.item(i, j).text() for j in range(7)]
-                attempts.append(
-                    Attempt(
-                        attempt_id=values[0],
-                        set_id=self.data["sets"][0].set_id,
-                        start_ns=int(values[1]),
-                        end_ns=int(values[2]),
-                        validity=values[3],
-                        reasons=json.loads(values[4]),
-                        rom_deg=float(values[5]) if values[5] else None,
-                        phases=json.loads(values[6]),
-                        provisional=False,
-                    )
-                )
-            record = self.data["sets"][0].model_copy(
-                update={
-                    "termination_reason": Termination(self.reason.currentData()),
-                    "failure_attempt_id": (
-                        None
-                        if self.failure.currentData() == "__none__"
-                        else self.failure.currentData()
-                    ),
-                    "failure_attempt_observed": (
-                        False
-                        if self.failure.currentData() == "__none__"
-                        else (True if self.failure.currentData() else None)
-                    ),
-                }
-            )
+            attempts = self._table_attempts()
+            record = self._current_record()
             reviewer = self.reviewer.text()
             reason = self.revision_reason.text()
             objective = self.objective.isChecked()
             adjudication = self.adjudication.isChecked()
+            mode = self.mode.currentData()
+            ids = [self.assessment_a.currentData(), self.assessment_b.currentData()]
+            differences = []
+            if mode == "adjudication" and all(i in self.assessments for i in ids):
+                differences = (
+                    disagreement_fields(*(self.assessments[i] for i in ids))
+                    if adjudication
+                    else []
+                )
+            options = dict(
+                mode=mode,
+                expected_revision=self.expected_revision,
+                base_revision=(
+                    "acquisition" if mode == "independent" else self.expected_revision
+                ),
+                evidence=self.current_evidence.copy(),
+                assessment_ids=ids if mode == "adjudication" else None,
+                resolved_disagreements=differences,
+                edit_operations=list(self.edit_operations),
+            )
             self.save_button.setEnabled(False)
             self.labels_button.setEnabled(False)
 
@@ -364,10 +414,9 @@ class MultimodalReviewDialog(QDialog):
                         attempts,
                         objective,
                         adjudication,
+                        **options,
                     )
-                    self.signals.message.emit(
-                        f"revision {entry['revision']} 저장: {entry['sets'][0]['review_status']}"
-                    )
+                    self.signals.saved.emit({"entry": entry})
                 except Exception as exc:
                     self.signals.message.emit(f"저장 실패: {exc}")
 

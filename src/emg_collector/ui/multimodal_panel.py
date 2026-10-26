@@ -1,10 +1,9 @@
 """Version 3 flow within the existing PyQt application."""
 
-import csv
-import json
 from pathlib import Path
 from threading import Thread
 import time
+import uuid
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
@@ -19,6 +18,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -60,34 +60,26 @@ def set_frame(label, frame):
     label.setPixmap(QPixmap.fromImage(image))
 
 
-def optional_spin(maximum=1_000_000):
-    spin = QDoubleSpinBox()
-    spin.setRange(-1, maximum)
-    spin.setValue(-1)
-    spin.setSpecialValueText("미입력")
-    return spin
-
-
 class MultimodalDialog(QDialog):
     def __init__(self, store, parent=None):
         super().__init__(parent)
         self.store = store
         self.controller = None
+        self.measurement_started = False
         self.preflight_ok = False
         self.preflight_thread = None
         self.setWindowTitle("이두·삼두 EMG + MediaPipe 동시 측정·자동 라벨링 | PILOT")
         prepare_resizable_dialog(self)
-        self.participant = ParticipantForm()
-        self.existing = QComboBox()
-        self.existing.addItem("신규 참가자", None)
-        with (store.root / "participants_public.csv").open(
-            newline="", encoding="utf-8"
-        ) as fh:
-            for row in csv.DictReader(fh):
-                self.existing.addItem(row["participant_id"], row)
-        self.existing.currentIndexChanged.connect(self._select_participant)
-        self.synthetic = WrappingCheckBox("Mock (모든 산출물 synthetic=true)")
-        self.mock_occlusion = WrappingCheckBox("Mock: 가림 구간 주입")
+        self.participant = ParticipantForm(required_only=True, single_measurement=True)
+        self.synthetic = QComboBox()
+        self.synthetic.addItem("실장치", False)
+        self.synthetic.addItem("모의 입력 (synthetic)", True)
+        self.diagnostic_alignment = QComboBox()
+        self.diagnostic_alignment.addItem("검증된 정렬만 사용", False)
+        self.diagnostic_alignment.addItem("진단용: 미검증 정렬 허용", True)
+        self.mock_occlusion = QComboBox()
+        self.mock_occlusion.addItem("가림 없음", False)
+        self.mock_occlusion.addItem("가림 구간 주입", True)
         self.mock_delay = QSpinBox()
         self.mock_delay.setRange(0, 1000)
         self.mock_delay.setSuffix(" ms / 50 samples")
@@ -97,37 +89,25 @@ class MultimodalDialog(QDialog):
         self.camera.setRange(0, 20)
         self.model = QLineEdit(str(default_model_path()))
         self.arm = QComboBox()
-        self.arm.addItems(["right", "left"])
+        self.arm.addItem("오른팔", "right")
+        self.arm.addItem("왼팔", "left")
         self.load = QDoubleSpinBox()
         self.load.setRange(0, 150)
-        self.load.setSuffix(" kg / 덤벨 1개")
-        self.number = QSpinBox()
-        self.number.setRange(1, 100)
-        self.target = QSpinBox()
-        self.target.setRange(-1, 1000)
-        self.target.setValue(-1)
-        self.target.setSpecialValueText("미정")
-        self.rest = optional_spin()
-        self.rest.setSuffix(" s")
-        self.visit = QLineEdit("V-" + time.strftime("%Y%m%d"))
-        self.hours = optional_spin()
-        self.upper_hours = optional_spin()
-        self.fatigue = optional_spin(10)
-        self.pain = optional_spin(10)
+        self.load.setSuffix(" kg")
+        self.load.setSingleStep(0.5)
+        self.load.setToolTip(
+            "덤벨 한 개의 무게입니다. 사용하는 개수는 아래에서 따로 입력하세요."
+        )
+        self.dumbbell_count = QSpinBox()
+        self.dumbbell_count.setRange(1, 100)
+        self.dumbbell_count.setSuffix(" 개")
         self.placement = QLineEdit()
         self.placement.setPlaceholderText("전극 위치·좌우·센서 부착 기록")
-        self.skin = WrappingCheckBox("피부 준비 및 GPIO 33/34, 32/35 배선 확인")
-        self.clothing = WrappingCheckBox(
-            "따뜻한 실내, 전극 노출·소매/케이블 간섭 없음, 가동범위 확인"
-        )
         self.pose_consent = WrappingCheckBox(
             "자세 좌표 수집 동의 (영상 미저장 시에도 연구자료로 저장)"
         )
         self.video_consent = WrappingCheckBox("판정용 원본 영상 저장 동의")
         self.access_consent = WrappingCheckBox("검토자의 영상 접근 동의")
-        self.export_consent = WrappingCheckBox(
-            "영상 내보내기 동의 (기본 export에는 항상 제외)"
-        )
         self.protocol = PilotProtocol()
         self.protocol_label = QLabel(
             "unilateral_curl_pilot 0.1.0 | PILOT — 임계값·실제 동기 오차 미검증"
@@ -152,9 +132,7 @@ class MultimodalDialog(QDialog):
         self.failure = QComboBox()
         self.failure.addItem("실패 시도 확인 불가", None)
         self.failure.addItem("실패 시도 없음", "__none__")
-        self.status = QLabel(
-            "센서 1 이두·센서 2 삼두와 카메라를 함께 기록합니다. MediaPipe 동작 단계·반복 판정이 두 EMG 신호에 시간으로 연결됩니다."
-        )
+        self.status = QLabel("필수 항목 입력 → 장치 점검 → 기록 시작")
         self.status.setWordWrap(True)
         self.status.setSizePolicy(
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
@@ -166,46 +144,64 @@ class MultimodalDialog(QDialog):
         self.line1 = self.plot.plot(pen="#50aaff", name="이두")
         self.line2 = self.plot.plot(pen="#ffaa50", name="삼두")
         self.trace = []
-        self.review_button = QPushButton("저장 세션 검토 / 수정")
+        self.review_button = QPushButton("저장 기록 검토 / 수정")
         self.review_button.clicked.connect(self._review)
         self.export_button = QPushButton("검증 후 학습 입력 export")
         self.export_button.clicked.connect(self._export)
         self.recovery_button = QPushButton("미완료 데이터 확인·복구")
         self.recovery_button.clicked.connect(self._recover)
-        form = QFormLayout()
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.tools_button = QPushButton("저장 데이터 관리")
+        tools_menu = QMenu(self.tools_button)
+        for button in (self.review_button, self.export_button, self.recovery_button):
+            button.setParent(self)
+            button.hide()
+            tools_menu.addAction(button.text(), button.click)
+        self.tools_button.setMenu(tools_menu)
+        self.device_settings = QDialog(self)
+        self.device_settings.setWindowTitle("장치·진단 설정")
+        prepare_resizable_dialog(self.device_settings)
+        settings_form = QFormLayout()
         for title, widget in [
-            ("기존 참가자", self.existing),
-            ("", self.participant),
-            ("", self.synthetic),
-            ("", self.mock_occlusion),
-            ("Mock 수신 batch 지연", self.mock_delay),
-            ("시리얼 460800 baud", self.port),
-            ("카메라", self.camera),
             ("MediaPipe 모델", self.model),
             ("프로토콜", self.protocol_label),
             ("", self.protocol_button),
-            ("방문 ID", self.visit),
-            ("최근 운동 후 시간(h)", self.hours),
-            ("최근 상지운동 후 시간(h)", self.upper_hours),
-            ("방문 피로(0–10)", self.fatigue),
-            ("방문 통증(0–10)", self.pain),
-            ("측정 팔", self.arm),
-            ("실제 중량", self.load),
-            ("세트 번호", self.number),
-            ("계획 반복 수 (실제 한계와 별도)", self.target),
-            ("직전 세트 후 휴식", self.rest),
-            ("센서 1 이두 / 센서 2 삼두", self.placement),
-            ("", self.skin),
-            ("", self.clothing),
+            ("입력 모드", self.synthetic),
+            ("Mock 가림", self.mock_occlusion),
+            ("Mock 수신 지연", self.mock_delay),
+            ("export 정렬", self.diagnostic_alignment),
+        ]:
+            settings_form.addRow(title, widget)
+        wrap_form_labels(settings_form)
+        settings_body = QWidget()
+        settings_body.setLayout(settings_form)
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setWidget(settings_body)
+        settings_layout = QVBoxLayout(self.device_settings)
+        settings_layout.addWidget(settings_scroll)
+        settings_close = QPushButton("닫기")
+        settings_close.clicked.connect(self.device_settings.accept)
+        settings_layout.addWidget(settings_close)
+        self.settings_button = QPushButton("장치·진단 설정")
+        self.settings_button.clicked.connect(self.device_settings.exec)
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        for title, widget in [
+            ("", self.participant),
+            ("시리얼 포트 *", self.port),
+            ("카메라", self.camera),
+            ("", self.settings_button),
+            ("측정 팔 *", self.arm),
+            ("덤벨 무게 *", self.load),
+            ("덤벨 개수 *", self.dumbbell_count),
+            ("전극 위치 *", self.placement),
             ("", self.pose_consent),
             ("", self.video_consent),
             ("", self.access_consent),
-            ("", self.export_consent),
         ]:
             form.addRow(title, widget)
         wrap_form_labels(form)
-        self.setup = QGroupBox("참가자 → 방문 → 채널/복장 → 동의")
+        self.setup = QGroupBox("필수 수집 정보")
         self.setup.setLayout(form)
         self.setup_scroll = QScrollArea()
         self.setup_scroll.setWidgetResizable(True)
@@ -229,9 +225,7 @@ class MultimodalDialog(QDialog):
             self.reason,
             self.failure,
             self.status,
-            self.review_button,
-            self.export_button,
-            self.recovery_button,
+            self.tools_button,
         ]:
             controls_layout.addWidget(widget)
         self.controls_scroll = QScrollArea()
@@ -261,49 +255,10 @@ class MultimodalDialog(QDialog):
             edit.textChanged.connect(self._invalidate)
         self.camera.valueChanged.connect(self._invalidate)
         self.arm.currentIndexChanged.connect(self._invalidate)
-        self.synthetic.toggled.connect(self._invalidate)
+        self.synthetic.currentIndexChanged.connect(self._invalidate)
 
     def _invalidate(self, *args):
         self.preflight_ok = False
-
-    def _select_participant(self):
-        row = self.existing.currentData()
-        if not row:
-            from emg_collector.ui.participant_form import generate_participant_id
-
-            self.participant.participant_id_edit.setText(generate_participant_id())
-            return
-        self.participant.participant_id_edit.setText(row["participant_id"])
-        self.participant.name_edit.clear()
-        # Registry columns remain compatible with v2; v3 additions live in snapshots.
-        snapshot = {}
-        for path in sorted(self.store.sessions_dir().glob("*/metadata.json")):
-            try:
-                metadata = json.loads(path.read_text(encoding="utf-8"))
-                if metadata.get("participant_id") == row["participant_id"]:
-                    snapshot = metadata.get("participant", snapshot)
-            except (OSError, ValueError):
-                continue
-        for key, spin in [
-            ("strength_sessions_per_week", self.participant.strength_sessions_spin),
-            ("strength_training_months", self.participant.strength_months_spin),
-        ]:
-            spin.setValue(snapshot[key] if snapshot.get(key) is not None else -1)
-        for key, spin in [
-            ("age", self.participant.age_spin),
-            ("height_cm", self.participant.height_spin),
-            ("weight_kg", self.participant.weight_spin),
-            ("exercise_sessions_per_week", self.participant.exercise_sessions_spin),
-            ("exercise_minutes_per_week", self.participant.exercise_minutes_spin),
-            ("days_since_last_exercise", self.participant.days_since_exercise_spin),
-        ]:
-            number = float(row[key]) if row[key] else spin.minimum()
-            spin.setValue(int(number) if isinstance(spin, QSpinBox) else number)
-        for key, combo in [
-            ("sex", self.participant.sex_combo),
-            ("dominant_arm", self.participant.dominant_arm_combo),
-        ]:
-            combo.setCurrentIndex(max(0, combo.findText(row[key])))
 
     def _protocol(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -332,11 +287,11 @@ class MultimodalDialog(QDialog):
         if self.preflight_thread and self.preflight_thread.is_alive():
             return
         options = (
-            self.synthetic.isChecked(),
+            self.synthetic.currentData(),
             self.camera.value(),
             self.port.text().strip(),
             self.model.text(),
-            self.arm.currentText(),
+            self.arm.currentData(),
         )
         self.preview_button.setEnabled(False)
         self.status.setText("모델·카메라·헤더 점검 중 (최대 약 8초)...")
@@ -423,6 +378,11 @@ class MultimodalDialog(QDialog):
             self.recovery_button.setEnabled(True)
 
     def _start(self):
+        if self.measurement_started:
+            self.status.setText(
+                "1회 측정이 이미 시작되었습니다. 추가 측정은 새로 실행하세요."
+            )
+            return
         if not self.preflight_ok:
             self.status.setText("먼저 카메라·시리얼·추적 점검을 통과하세요.")
             return
@@ -433,50 +393,33 @@ class MultimodalDialog(QDialog):
                 pose_coordinates=self.pose_consent.isChecked(),
                 video_storage=self.video_consent.isChecked(),
                 video_access=self.access_consent.isChecked(),
-                video_export=self.export_consent.isChecked(),
+                video_export=False,
             )
 
-            def value(spin):
-                return None if spin.value() < 0 else spin.value()
-
-            visit = Visit(
-                visit_id=self.visit.text(),
-                hours_since_exercise=value(self.hours),
-                hours_since_upper_body_exercise=value(self.upper_hours),
-                fatigue_score=value(self.fatigue),
-                pain_score=value(self.pain),
-            )
+            visit = Visit(visit_id="V-" + uuid.uuid4().hex)
             self.controller = CollectionController(
                 self.store.root,
                 public,
                 consent,
                 visit,
                 self.protocol,
-                arm=self.arm.currentText(),
+                arm=self.arm.currentData(),
                 load_kg=self.load.value(),
-                set_number=self.number.value(),
-                rest_before_s=value(self.rest),
-                target_repetitions=(
-                    None if self.target.value() < 0 else self.target.value()
-                ),
+                dumbbell_count=self.dumbbell_count.value(),
                 port=self.port.text().strip(),
                 camera_index=self.camera.value(),
                 model_path=self.model.text(),
-                synthetic=self.synthetic.isChecked(),
+                synthetic=self.synthetic.currentData(),
                 placement=self.placement.text(),
-                skin_prepared=self.skin.isChecked(),
-                clothing_confirmed=self.clothing.isChecked(),
-                mock_occlusion=self.mock_occlusion.isChecked(),
+                skin_prepared=False,
+                clothing_confirmed=False,
+                mock_occlusion=self.mock_occlusion.currentData(),
                 mock_receive_batch_delay_ms=self.mock_delay.value(),
             )
             # Participant registration is small; stream flush/encoding/inference run on workers.
-            with (self.store.root / "participants_public.csv").open(
-                newline="", encoding="utf-8"
-            ) as fh:
-                known = {r["participant_id"] for r in csv.DictReader(fh)}
-            if public.participant_id not in known:
-                self.store.register_participant(private, public)
+            self.store.register_participant(private, public)
             self.controller.start()
+            self.measurement_started = True
             self.setup.setEnabled(False)
             self.recovery_button.setEnabled(False)
             self.start_button.setEnabled(False)
@@ -529,14 +472,19 @@ class MultimodalDialog(QDialog):
                 )
         if c.done.is_set():
             self.controller = None
-            self.setup.setEnabled(True)
             self.recovery_button.setEnabled(True)
-            self.start_button.setEnabled(True)
-            self.preview_button.setEnabled(True)
+            self.start_button.setText("1회 측정 종료")
+            self.start_button.setEnabled(False)
+            self.preview_button.setEnabled(False)
             self.stop_button.setEnabled(False)
             self.pain_button.setEnabled(False)
             self.status.setText(
-                "완료: "
+                (
+                    "미완료: "
+                    if c.errors
+                    or getattr(c, "manifest", {}).get("status") != "complete"
+                    else "완료: "
+                )
                 + str(getattr(c, "writer", None).root if hasattr(c, "writer") else "")
                 + " | "
                 + (
@@ -556,13 +504,15 @@ class MultimodalDialog(QDialog):
             f"유효 {counts['valid']} / 무효 {counts['invalid']} / 불명 {counts['unknown']} | "
             f"각도 {data.get('metrics',{}).get('elbow_angle_deg')} | 추론 생략 {c.inference_skipped}"
         )
+        if c.errors:
+            self.status.setText("장애로 중지·미완료 저장 중: " + "; ".join(c.errors))
 
     def _review(self):
         from emg_collector.ui.multimodal_review import MultimodalReviewDialog
 
         path = QFileDialog.getExistingDirectory(
             self,
-            "검토할 v3 세션",
+            "검토할 측정 기록",
             str(getattr(self, "last_session", None) or self.store.sessions_dir()),
         )
         if path:
@@ -575,7 +525,8 @@ class MultimodalDialog(QDialog):
         )
         if not path:
             return
-        synthetic = self.synthetic.isChecked()
+        synthetic = self.synthetic.currentData()
+        diagnostic = self.diagnostic_alignment.currentData()
         output = Path(path) / ("training_" + time.strftime("%Y%m%d_%H%M%S"))
         self.export_button.setEnabled(False)
 
@@ -584,9 +535,15 @@ class MultimodalDialog(QDialog):
                 from emg_collector.storage.training_export import export_training
 
                 result = export_training(
-                    self.store.root, output, synthetic=synthetic, allow_pilot=True
+                    self.store.root,
+                    output,
+                    synthetic=synthetic,
+                    allow_pilot=True,
+                    allow_unverified_alignment=diagnostic,
                 )
-                message = f"PILOT export {output}: {result}"
+                message = f"PILOT export {output}: 예제 {result['examples']}개, 세션 {result['excluded_sessions']}, 창 제외 {result['excluded']}, 빈 split {result['empty_splits']}. 제외 보고서: exclusion_report.json"
+                if diagnostic:
+                    message += " / 경고: 물리 동기 미검증 진단 자료입니다."
             except Exception as exc:
                 message = f"export 실패: {exc}"
             self.signals.result.emit({"kind": "export", "message": message})

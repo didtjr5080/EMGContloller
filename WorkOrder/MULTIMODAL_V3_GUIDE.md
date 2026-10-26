@@ -185,7 +185,8 @@ v2는 상완요골근 그대로 읽는다. v1은 미지원 오류를 낸다. 과
 split은 window 전에 participant_id별 SHA-256(seed:ID), 70/15/15 비율로 정한다.
 같은 참가자의 모든 방문/세트/겹치는 window는 같은 split이다. 작은 코호트는 빈 split이 가능하다.
 고정 시간 또는 최근 K 반복 window, 반복 단위 stride를 지원한다. 예측 시점은 유효 반복 완료 직후다.
-window에는 그 시점 이하 EMG와 그때까지 추론 완료된 pose만 들어간다.
+촬영 경계(prediction_capture_ns)와 추론·debounce 완료 시점(decision_host_ns)을 구분한다.
+window에는 촬영 경계 이하 측정값 중 결정 시점까지 수신된 EMG와 추론 완료된 pose만 들어간다.
 pose는 causal previous-neighbor로 연결하고 최대 gap 초과 시 0+mask=False를 쓴다.
 
 `tabular_features.csv`와 `sequences/*.npz`(values/mask/host_ns), 별도 target/index,
@@ -205,3 +206,71 @@ feature 테이블에 없다. ROM 특징은 이용 가능한 pose에서 다시 �
 후보 모델은 Ridge/SVR/RF/XGBoost/CNN/RNN/TCN 등으로 유지하며 이번 작업에서 선정하지 않는다.
 
 상세 필드 규칙은 [데이터 사전](MULTIMODAL_V3_SCHEMA.md)을 참조한다.
+
+## 코드 리뷰 수정 후 수집·검토·export
+
+수신이 시작되지 않거나 정상 EMG 수신이 멈추면 watchdog이 장치 장애로 중단한다.
+잘못된 행·boot 로그는 유효 샘플을 대신하지 않는다. camera/pose 정체도 검사한다.
+오류 세션은 미완료로 표시하며, 원본과 마지막 유효 데이터는 보존하고 exact로 확정하지 않는다.
+
+검토 창의 독립 판정은 원 자동 시도 목록부터 시작하고 이전 사람 판정을 숨긴다.
+영상과 EMG·각도를 확인하여 객관적 검토 체크, 검토자 ID와 근거를 기록한다.
+ID 입력은 인증 기능이 아니므로 실제 독립 검토자 운영은 연구자가 관리한다.
+서로 다른 두 완료 평가가 일치하면 확정하고, 불일치하면 조정 모드에서 두 assessment를
+선택하여 차이를 확인하고 해결 근거를 저장한다. 초안은 독립 완료 평가에 포함되지 않는다.
+삭제·분할한 terminal failure는 다시 선택해야 한다. 시도 ID는 직접 변경할 수 없다.
+추가·분할·병합된 시도는 unknown으로 시작하므로 경계·유효성·phase를 검토한다.
+누군가 먼저 저장했다면 재불러오기 후 다시 검토한다. 저장 중 실패한 거래는
+검토 창의 복구 버튼으로 복구할 수 있고, 복구 전에는 미확정 상태다.
+
+실장치 EMG는 host_receive_ns만으로 물리 동기를 입증할 수 없다.
+reference event로 검증된 mapping이 없는 기본 라벨은 alignment_unverified이며
+기본 학습 export에서 제외한다. known synthetic mapping은 모의 데이터에만 적용된다.
+mapping 교체는 publish_alignment()로 별도 파생 파일을 발행하며 acquisition을 덮어쓰지 않는다.
+정렬·원시 근거가 바뀌면 예전 확정은 해제되어 재평가가 필요하다.
+
+```powershell
+# integrity와 signal quality를 별도 JSON 결과로 확인
+.venv\Scripts\python scripts/validate_dataset.py datasets/synthetic_new --quality-report build/quality.json
+# 기본값: 미완료/손상/미검토 세션 격리 후 정상 세션 계속 출력
+.venv\Scripts\python scripts/export_training_dataset.py datasets/synthetic_new datasets/export_new --synthetic --allow-pilot
+# 관련 세션/창 제외가 발생하면 전체 중단 (완료 manifest 없음)
+.venv\Scripts\python scripts/export_training_dataset.py datasets/synthetic_new datasets/export_strict --synthetic --allow-pilot --strict
+# 물리 동기 미검증 추정 mapping의 파일럿 진단에만 명시적으로 허용
+.venv\Scripts\python scripts/export_training_dataset.py datasets/real_pilot datasets/diagnostic_new --allow-pilot --allow-unverified-alignment
+```
+
+UI의 장치·진단 설정 창에 있는 진단용 export 체크도 동일한 옵션이다. 미검증 허용은 gap·clipping 등 품질 검사를 우회하지 않는다.
+경고·policy·정렬/검토 버전과 창별 품질, exclusion_report.json을 함께 확인한다.
+미검증 mapping조차 없거나 사용 가능 시점 조건을 충족하지 못하면 진단 export도 0예제일 수 있다.
+0예제나 빈 train/validation/test split은 학습 준비 완료가 아니다. 출력 경로는 새 경로를 사용한다.
+이번 재현 예제는 datasets/review_fixes_20261026, strict 결과는 datasets/review_fixes_training_20261026이다.
+
+## 필수 입력만 표시하는 수집 화면
+
+기본 v3 화면에서 식별용 이름(선택), 나이, 키, 주당 운동 횟수, 최근 운동 후 경과일을 입력한다.
+기존/신규 참가자 구분과 ID 생성 조작, 방문 유지, 세트 번호 입력은 제공하지 않는다.
+시리얼 포트·카메라, 측정 팔·실제 중량·전극 위치를 확인하고 동의와 장치 점검 후 기록을 시작한다.
+체크박스는 연구 참여·자세 좌표·원본 영상 저장·검토자 영상 접근 동의 4개뿐이다.
+Mock/가림/진단 선택은 별도 설정 창의 선택 목록으로 유지한다.
+한 번 측정이 시작되면 같은 화면에서 다시 측정할 수 없다. 다음 측정은 앱을 새로 실행한다.
+자동 ID는 파일 참조에만 사용하며 측정 간 연결이나 기존 기록 불러오기에 사용하지 않는다.
+이름은 participants_private.csv에 ID와 함께 저장하고 공개 CSV·metadata·학습 feature에 넣지 않는다.
+피부·복장 확인을 수집하지 않으므로 skin_prepared/clothing_confirmed는 False,
+metadata.preparation_confirmation은 not_confirmed로 기록한다. 자동으로 확인 완료라고 저장하지 않는다.
+덤벨 무게는 한 개당 kg이며, 덤벨 개수는 별도 입력칸에서 수정한다(기본 1개, 1~100개).
+기존 고정 설명인 'kg / 덤벨 1개'를 없애고 두 값을 각각 저장한다.
+검토 기록에도 개수를 보존하며 --include-load export에는 무게와 개수가 함께 포함된다.
+영상 저장·접근 동의는 사용자가 직접 선택하며, 객관적 영상 검토를 하려면 두 동의가 필요하다.
+기존처럼 중지·통증 중지 버튼은 고정되고, 종료 사유와 실패 시도 선택을 유지한다.
+
+성별·몸무게·주당 운동 시간·근력운동 횟수/경력·주사용 팔·메모와
+방문 피로/통증/운동 후 시간·계획 반복 수·휴식은 새 v3 수집에서 입력받지 않는다.
+선택 데이터는 null/unspecified/빈 메모 등 기존 스키마 기본값을 사용한다.
+숨겨진 선택 위젯에 값이 남아 있어도 새 참가자 스냅샷으로 수집하지 않는다.
+방문 ID는 내부 고유값으로 자동 생성하고 세트 번호는 내부값 1, 영상 내보내기 동의는 False다. 기존 저장 파일은 수정하지 않는다.
+
+일반 장치 설정은 포트와 카메라만 표시한다. 모델 경로·프로토콜 선택·Mock과 가림/지연 주입·
+미검증 정렬 진단 옵션은 별도 **장치·진단 설정** 창에서 연다.
+세션 검토·학습 export·미완료 복구는 **저장 데이터 관리** 메뉴에서 실행한다.
+기존 v2 화면의 입력과 데이터 모델은 유지한다.

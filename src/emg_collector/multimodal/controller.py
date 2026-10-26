@@ -5,14 +5,17 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime, timezone
 import math
+import json
 from pathlib import Path
 from queue import Queue, Empty
 from threading import Event, Lock, Thread
 import time
 import uuid
+from pydantic import PositiveInt, TypeAdapter
 
 from emg_collector.acquisition.camera_worker import capture_loop
 from emg_collector.acquisition.time_unwrapper import TimeUnwrapper
+from emg_collector.acquisition.watchdog import StreamWatchdog, WatchdogPolicy
 from emg_collector.labeling.repetitions import RepetitionDetector
 from emg_collector.multimodal.schema import ProfileParser, SetRecord, channels
 from emg_collector.pose.metrics import metrics
@@ -20,6 +23,7 @@ from emg_collector.pose.pose_worker import MediaPipePose
 from emg_collector.runtime_paths import default_model_path
 from emg_collector.storage.multimodal_writer import MultimodalWriter
 from emg_collector.sync.clock_alignment import fit_clock
+from emg_collector.quality.window import QualityPolicy
 
 
 class CollectionController:
@@ -33,6 +37,7 @@ class CollectionController:
         *,
         arm="right",
         load_kg=0,
+        dumbbell_count=1,
         set_number=1,
         rest_before_s=None,
         target_repetitions=None,
@@ -46,20 +51,31 @@ class CollectionController:
         clothing_confirmed=False,
         mock_occlusion=False,
         mock_receive_batch_delay_ms=0,
+        clock_ns=None,
+        watchdog_policy=None,
     ):
         if not consent.research or not consent.pose_coordinates:
             raise ValueError("research and pose-coordinate consent are required")
-        if not placement or not skin_prepared or not clothing_confirmed:
-            raise ValueError(
-                "confirm electrode placement, skin preparation, clothing and free ROM"
-            )
+        if not placement:
+            raise ValueError("전극 위치를 입력하세요.")
         self.root = Path(root)
+        self.clock_ns = clock_ns or (lambda: time.monotonic_ns())
+        self.watchdog_policy = watchdog_policy or WatchdogPolicy()
+        self.last_valid_sample_monotonic_ns = None
+        self.last_frame_ns = None
+        self.last_pose_ns = None
+        self.motion_end_ns = None
+        self.faults = []
+        self.state_lock = Lock()
         self.participant = participant
         self.consent = consent
         self.visit = visit
         self.protocol = protocol
         self.arm = arm
         self.load = load_kg
+        self.dumbbell_count = TypeAdapter(PositiveInt).validate_python(
+            dumbbell_count, strict=True
+        )
         self.set_number = set_number
         self.rest = rest_before_s
         self.target_repetitions = target_repetitions
@@ -74,6 +90,7 @@ class CollectionController:
         self.mock_receive_batch_delay_ms = mock_receive_batch_delay_ms
         self.placement = placement
         self.skin_prepared = skin_prepared
+        self.clothing_confirmed = clothing_confirmed
         self.stop_event = Event()
         self.pose_queue = Queue(maxsize=2)
         self.snapshot_lock = Lock()
@@ -88,6 +105,7 @@ class CollectionController:
         self.regressions = 0
         self.estimated_missing = 0
         self.epoch_observations = {}
+        self.clock_mappings = {}
         self.frame_times = deque(maxlen=10000)
         self.emg_times = deque(maxlen=10000)
         self.termination = "other"
@@ -105,7 +123,10 @@ class CollectionController:
         self.thread.start()
 
     def stop(self, reason="other", failure_attempt_id=None):
-        self.termination = reason
+        with self.state_lock:
+            self.termination = "equipment_failure" if self.errors else reason
+            if self.motion_end_ns is None:
+                self.motion_end_ns = self.clock_ns()
         self.failure_attempt_observed = (
             False
             if failure_attempt_id == "__none__"
@@ -116,9 +137,35 @@ class CollectionController:
         )
         self.stop_event.set()
 
-    def fail(self, stream, exc):
-        self.errors.append(f"{stream}: {type(exc).__name__}: {exc}")
-        self.termination = "equipment_failure"
+    def fail(self, stream, exc, code=None):
+        now = self.clock_ns()
+        code = code or f"{stream}_failure"
+        with self.state_lock:
+            self.errors.append(f"{code}: {type(exc).__name__}: {exc}")
+            self.termination = "equipment_failure"
+            if self.motion_end_ns is None:
+                self.motion_end_ns = now
+            fault = {
+                "code": code,
+                "detected_host_ns": now,
+                "last_valid_sample_host_ns": self.last_valid_sample_monotonic_ns,
+            }
+            self.faults.append(fault)
+        if hasattr(self, "writer") and not getattr(self.writer, "closed", False):
+            try:
+                self.writer.submit(
+                    "events.csv",
+                    {
+                        "host_ns": now,
+                        "sample_index": (
+                            self.sample_count - 1 if self.sample_count else None
+                        ),
+                        "event_type": code,
+                        "detail": json.dumps(fault),
+                    },
+                )
+            except (OSError, RuntimeError):
+                pass
         self.stop_event.set()
 
     def preview(self):
@@ -128,7 +175,7 @@ class CollectionController:
     def _run(self):
         pose = None
         try:
-            self.start_ns = time.monotonic_ns()
+            self.start_ns = self.clock_ns()
             self.session_id = (
                 "M_"
                 + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -172,13 +219,25 @@ class CollectionController:
                 "start_host_ns": self.start_ns,
                 "start_time_utc": datetime.now(timezone.utc).isoformat(),
                 "synthetic": self.synthetic,
+                "watchdog_policy": self.watchdog_policy.model_dump(),
+                "alignment_version": "alignment-1",
+                "quality_policy": QualityPolicy().model_dump(),
+                "equipment": {
+                    "dumbbell_count": self.dumbbell_count,
+                    "load_kg_per_dumbbell": self.load,
+                },
                 "mock_receive_batch_delay_ms": (
                     self.mock_receive_batch_delay_ms if self.synthetic else None
                 ),
                 "consent": self.consent.model_dump(),
                 "channels": [c.model_dump() for c in channel_map],
                 "protocol": self.protocol.model_dump(),
-                "clothing_confirmed": True,
+                "clothing_confirmed": self.clothing_confirmed,
+                "preparation_confirmation": (
+                    "confirmed"
+                    if self.skin_prepared and self.clothing_confirmed
+                    else "not_confirmed"
+                ),
                 "camera": {
                     "index": self.camera_index,
                     "coordinates": "normalized_unmirrored",
@@ -198,12 +257,13 @@ class CollectionController:
                     "unit": "ADC count",
                     "spectral_validity": "unverified",
                 },
-                "session_relation": "one visit snapshot, one set per recording; visit_id can link recordings",
+                "session_relation": "standalone recording; visit and set IDs are internal file references",
             }
             self.writer = MultimodalWriter(
                 self.root / "sessions" / self.session_id,
                 metadata,
                 self.consent.video_storage,
+                shutdown_timeout_s=self.watchdog_policy.shutdown_timeout_s,
             )
             self.writer.submit(
                 "events.csv",
@@ -226,22 +286,59 @@ class CollectionController:
                     target=self._pose, args=(pose,), name="pose-inference", daemon=True
                 ),
             ]
+            self._workers = workers
             for worker in workers:
                 worker.start()
             self.phase = "collecting"
             self.started.set()
-            self.stop_event.wait()
+            while not self.stop_event.wait(0.05):
+                for stream, last in (
+                    ("serial", self.last_valid_sample_monotonic_ns),
+                    ("camera", self.last_frame_ns),
+                    ("pose", self.last_pose_ns),
+                ):
+                    watchdog = StreamWatchdog(self.start_ns, self.watchdog_policy)
+                    watchdog.last_valid_ns = last
+                    state = watchdog.check(self.clock_ns())
+                    if state:
+                        self.fail(
+                            stream,
+                            TimeoutError(f"no valid {stream} data"),
+                            f"{stream}_{state}",
+                        )
+                        break
             self.phase = "finalizing"
+            shutdown_deadline = (
+                time.monotonic() + self.watchdog_policy.shutdown_timeout_s
+            )
             for worker in workers:
-                worker.join(timeout=10)
+                worker.join(timeout=max(0, shutdown_deadline - time.monotonic()))
                 if worker.is_alive():
-                    self.errors.append(
-                        f"{worker.name} failed to stop; streams retained incomplete"
+                    self.fail(
+                        worker.name,
+                        TimeoutError(
+                            "worker failed to stop; original streams retained"
+                        ),
+                        "worker_shutdown_timeout",
                     )
             if any(worker.is_alive() for worker in workers):
                 self.writer.close_incomplete()
+                from emg_collector.storage.multimodal_writer import atomic_json
+
+                atomic_json(
+                    self.writer.root / "completion_manifest.json",
+                    {
+                        "status": "incomplete",
+                        "errors": self.errors.copy(),
+                        "faults": self.faults.copy(),
+                    },
+                )
                 return
-            end = time.monotonic_ns()
+            end = (
+                self.motion_end_ns
+                if self.motion_end_ns is not None
+                else self.clock_ns()
+            )
             partial = self.detector.finish(end)
             if partial:
                 self.writer.submit("repetitions.csv", partial.model_dump(mode="json"))
@@ -250,6 +347,7 @@ class CollectionController:
                 arm=self.arm,
                 set_number=self.set_number,
                 load_kg=self.load,
+                dumbbell_count=self.dumbbell_count,
                 rest_before_s=self.rest,
                 target_repetitions=self.target_repetitions,
                 start_ns=self.start_ns,
@@ -274,13 +372,18 @@ class CollectionController:
                 },
             )
             sync = {
+                "alignment_version": "alignment-1",
                 "method": "software_only",
+                "motion_end_host_ns": end,
+                "acquisition_end_host_ns": self.clock_ns(),
+                "stop_grace_ns": 0,
                 "physical_sync_error_ms": None,
                 "events": ["software_sync_start", "software_sync_end"],
-                "epochs": {
+                "posthoc_receive_fits": {
                     str(epoch): fit_clock(obs)
                     for epoch, obs in self.epoch_observations.items()
                 },
+                "epochs": self.clock_mappings,
             }
 
             def rate(times):
@@ -308,6 +411,7 @@ class CollectionController:
                 "original_camera_drop_count": None,
                 "sync_validated": False,
                 "errors": self.errors.copy(),
+                "faults": self.faults.copy(),
             }
             if not self.sample_count or not self.frame_count:
                 self.errors.append("required EMG/camera stream is empty")
@@ -334,7 +438,7 @@ class CollectionController:
             if hasattr(self, "writer"):
                 self.writer.close_incomplete()
         finally:
-            if pose:
+            if pose and not any(w.is_alive() for w in getattr(self, "_workers", [])):
                 pose.close()
             self.phase = "finished"
             self.done.set()
@@ -352,10 +456,36 @@ class CollectionController:
             last_raw = None
             first_header = True
             last_unwrapped = None
-            deadline = time.monotonic() + 5
+            watchdog = StreamWatchdog(self.clock_ns(), self.watchdog_policy)
             next_tick = time.monotonic()
+            synthetic_origin = self.clock_ns() + 2_000_000
+            if self.synthetic:
+                self.clock_mappings["0"] = [
+                    {
+                        "mapping_version": "alignment-1:synthetic-e0",
+                        "epoch_id": 0,
+                        "method": "synthetic_reference",
+                        "status": "validated",
+                        "offset_ns": synthetic_origin,
+                        "drift_ppm": 0,
+                        "uncertainty_ns": 0,
+                        "available_host_ns": self.clock_ns(),
+                        "fit_scope": "causal",
+                        "valid_from_device_us": 0,
+                        "valid_to_device_us": 2**63 - 1,
+                        "latency_bias_ns": 0,
+                    }
+                ]
             mock_time = 0
             while not self.stop_event.is_set():
+                state = watchdog.check(self.clock_ns())
+                if state:
+                    self.fail(
+                        "serial",
+                        TimeoutError("valid EMG sample deadline exceeded"),
+                        f"serial_{state}",
+                    )
+                    break
                 if self.synthetic:
                     if not parser.header_seen:
                         line = parser.header
@@ -374,7 +504,15 @@ class CollectionController:
                     and mock_time % 100_000 == 0
                 ):
                     self.stop_event.wait(self.mock_receive_batch_delay_ms / 1000)
-                received = time.monotonic_ns()
+                received = self.clock_ns()
+                state = watchdog.check(received)
+                if state:
+                    self.fail(
+                        "serial",
+                        TimeoutError("valid EMG sample deadline exceeded"),
+                        f"serial_{state}",
+                    )
+                    break
                 if line.strip().startswith("time_us,"):
                     parser.parse(line, received)
                     if not first_header:
@@ -392,10 +530,6 @@ class CollectionController:
                     self.malformed_count += 1
                     continue
                 if sample is None:
-                    if time.monotonic() > deadline and self.sample_count == 0:
-                        raise RuntimeError(
-                            "no matching header and valid sample in 5 seconds; reset ESP32"
-                        )
                     continue
                 result = unwrapper.unwrap(sample.device_time_us)
                 # A non-rollover timer reset > 1 s needs a new clock epoch even early in a visit.
@@ -432,6 +566,8 @@ class CollectionController:
                 sample.unwrapped_time_us = result.value_us
                 self.writer.submit("samples.csv", sample.model_dump())
                 self.sample_count += 1
+                watchdog.mark_valid(received)
+                self.last_valid_sample_monotonic_ns = received
                 self.emg_times.append(received)
                 values = [sample.s1_env, sample.s1_raw, sample.s2_env, sample.s2_raw]
                 self.clipping_count += sum(value in (0, 4095) for value in values)
@@ -439,6 +575,19 @@ class CollectionController:
                     self.epoch_observations.setdefault(epoch, []).append(
                         (result.value_us, received)
                     )
+                    obs = self.epoch_observations[epoch]
+                    if (
+                        not self.synthetic
+                        and (len(obs) == 3 or self.sample_count % 500 == 1)
+                        and len(obs) >= 3
+                    ):
+                        mapping = fit_clock(obs[-120:])
+                        mapping.update(
+                            epoch_id=epoch,
+                            fit_scope="causal",
+                            valid_to_device_us=result.value_us + 5_000_000,
+                        )
+                        self.clock_mappings.setdefault(str(epoch), []).append(mapping)
                 with self.snapshot_lock:
                     self.snapshot.update(sample=sample.model_dump())
                 last_raw = sample.device_time_us
@@ -464,6 +613,7 @@ class CollectionController:
                     if self.synthetic
                     else pose.infer(frame, captured)
                 )
+                self.last_pose_ns = self.clock_ns()
                 if self.synthetic:
                     for row in rows:
                         row["capture_host_ns"] = captured
@@ -496,6 +646,8 @@ class CollectionController:
                 valid = derived["quality_mask"] == "ok"
                 if not valid:
                     self.tracking_loss += 1
+                if self.motion_end_ns is not None and captured > self.motion_end_ns:
+                    continue
                 attempt = self.detector.update(
                     captured,
                     derived["elbow_angle_deg"],

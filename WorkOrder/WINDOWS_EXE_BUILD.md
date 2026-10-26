@@ -1,7 +1,7 @@
 # Windows 실행 파일 — 2026-10-26
 
-산출물: `dist/EMGController.exe` (단일 파일, 185,502,309 bytes, 약 177 MiB).
-SHA-256: `57906f0cf1ac329152caf3fb25b2aa74809bb57ab7560aefc446332b0289b769`.
+산출물: `dist/EMGController.exe` (이름 입력·동의 체크·단회 측정 + 덤벨 무게/개수 + F1~F6 수정 포함, 단일 파일, 185,544,261 bytes, 약 177 MiB).
+SHA-256: `715a1a224077dd73ceacbd27496ca6b58887de9958aba6dd5c3565309b957ef0`.
 
 저장소의 `dist/EMGController.exe`는 Git LFS로 관리한다. 복제 후 `git lfs pull`로 실제 바이너리를 받는다.
 다른 dist 산출물·수집 데이터·영상·가상환경·모델 원본은 Git 제외를 유지한다.
@@ -15,13 +15,13 @@ MediaPipe Pose Lite 모델과 PILOT 프로토콜을 포함하며 실제 참가�
 
 ## 실제 검증
 
-* 소스 회귀 시험: **81 passed in 14.94s**.
+* 소스 회귀 시험: **121 passed in 41.30s**. 단회 시작/종료·동의 체크 4개·이름 비공개 저장·덤벨 무게/개수·기존 기록 호환·중량 포함 export 시험 포함. [코드 리뷰 수정 보고](CODE_REVIEW_FIX_REPORT.md).
 * 실행 파일 자체 self-test: exit **0**, `ok=true`.
 * 다른 작업 폴더에서 PATH를 Windows/System32로 제한하고 PYTHONHOME/PYTHONPATH를 제거한 실행:
   exit **0**, `ok=true`. Python 환경 경로를 사용하지 않고 실행됐다.
 * 포함 모델 해시 확인 및 실제 MediaPipe 빈 이미지 추론 성공.
 * Qt 메인 창, v3 수집 창, 영상/EMG/각도 검토 창 생성 성공.
-* 독립 실행 점검: synthetic EMG **493 samples**, MJPG 영상 **23 frames**, MediaPipe 통합 라벨 **493행**, dataset validator 오류 없음.
+* 최신 재빌드 자체 점검: synthetic EMG **501 samples**, MJPG 영상 **20 frames**, MediaPipe 통합 라벨 **501행**, dataset validator 오류 없음.
 * 기본 화면 유형 `biceps_triceps_mediapipe`와 두 EMG 채널의 MediaPipe 라벨 연결을 exe 자체에서 검사했다.
 * 수집·검토 창의 800×600 크기와 종료 사유 전체 한국어 선택지 검사 통과:
   `compact_collection_and_review=true`, `korean_termination_choices=true`.
@@ -31,6 +31,20 @@ MediaPipe Pose Lite 모델과 PILOT 프로토콜을 포함하며 실제 참가�
 
 원본 점검 결과: `build/windows-self-test.json`, `build/portable-self-test.json`.
 빌드 로그: `build_windows.log` (모두 Git 제외).
+덤벨 입력 수정 전 버전의 Python 경로 제거 독립 실행은 첫 시도에
+worker_shutdown_timeout과 camera_failure(writer closed)로 실패했고, 동일 바이너리·동일
+조건 재실행은 exit0/ok=true였다. 단발 종료 지연의 원인은 확정하지 않았다.
+첫 실패 로그는 build/minimal_ui_portable_first_failure.json에 보존했다.
+덤벨 입력 수정 후 첫 재빌드 자체 시험은 writer_shutdown_timeout으로 실패했다
+(build/dumbbell_first_exe_failure.json). 점검용 synthetic 세션에만 종료 대기 20초와
+전체 완료 대기 45초를 적용한 최신 EXE 자체 시험은 exit0/ok=true였다.
+실제 수집 기본 watchdog의 종료 대기 5초는 유지한다. 자체 시험은 물리 지연/성능 검증이 아니다.
+덤벨 입력 수정 버전의 Python 경로 제거·다른 작업 폴더 독립 실행도 exit0/ok=true였다:
+EMG/통합 라벨492행·영상21프레임, validator 오류0.
+이름/단회 측정 버전은 새로 재빌드했으며 자체 시험 exit0/ok=true다.
+동일 최신 버전의 Python 경로 제거 독립 실행도 exit0/ok=true:
+EMG/통합 라벨508행·영상19프레임, validator 오류0.
+실제 센서 입력·물리 정렬 검증은 수행하지 않았고, software receive fit은 미검증으로 유지한다.
 
 ## 빌드 재현
 

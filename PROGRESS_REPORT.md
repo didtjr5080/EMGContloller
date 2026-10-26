@@ -1,5 +1,80 @@
 # EMG Dataset Collector — 진행 현황 공유
 
+## 2026-10-26 — 이름 입력과 단회 측정 흐름
+
+사용자 요청으로 기본 v3의 기존/신규 선택·ID 생성 UI·세트 번호·피부/복장 체크를 제거했다.
+이름(선택)은 ParticipantPrivate와 participants_private.csv로만 저장하며 공개 참가자/metadata에 넣지 않는다.
+체크박스는 연구·자세 좌표·영상 저장·영상 접근 동의 4개다. 장치/Mock/진단은 선택 목록이다.
+내부 참가자/방문 ID는 자동 생성하며 이전 사용자 불러오기나 날짜별 방문 연결을 제공하지 않는다.
+측정 시작 후 같은 창에서 두 번째 측정을 차단하고, 완료 후 입력/시작은 다시 활성화하지 않는다.
+다음 측정은 앱을 새로 실행한다. 이름만으로 실제 사람의 신원을 인증하거나 재실행까지 중복을 차단하지는 않는다.
+피부/복장 확인을 받지 않은 값을 자동 True로 만들지 않도록 controller의 준비 확인 필수 gate를
+전극 위치 필수 검사로 변경하고 preparation_confirmation=not_confirmed와 False 값을 보존한다.
+연구/자세 동의와 장치 점검은 계속 필요하다. 기존 v2와 원본 자료는 유지한다.
+검증: **121 passed in 41.30s**, Ruff F/Black 통과. 동의 체크만 존재, 이름 private 저장,
+공개 파일에서 이름 제외, 완료 후 재시작 및 중복 등록 차단, 준비 미확인 값 저장을 검사했다.
+실제 로그 build/single_measurement_tests.txt. Windows 재빌드 결과는 WorkOrder/WINDOWS_EXE_BUILD.md.
+EXE 재빌드·자체 시험·Python 경로 제거 독립 실행 모두 성공했다.
+독립 실행 EMG/라벨508행·영상19프레임·validator 오류0. EXE185,544,261 bytes,
+SHA256 715a1a224077dd73ceacbd27496ca6b58887de9958aba6dd5c3565309b957ef0.
+맑은 고딕을 직접 로드한 1100×780/640×480 화면은 build/single_measurement*.png로 확인했다.
+실제 장치 연결은 미검증이다.
+
+## 2026-10-26 — 덤벨 무게·개수 분리 입력
+
+중량 칸의 '덤벨 1개'는 고정 suffix여서 사용자가 개수를 바꿀 수 없었다.
+무게는 kg 입력(화살표 0.5kg 간격), 개수는 별도 정수 입력(1~100개)으로 분리했다.
+두 값은 controller → metadata.equipment 및 sets.csv → review snapshot으로 보존한다.
+--include-load 학습 feature에도 load_kg와 dumbbell_count를 함께 제공한다.
+기존 개수 없는 CSV/review는 1개로 읽고, 독립 판정 비교에서도 생략/기본1은 같은 값으로 취급한다.
+기존 데이터 파일은 제자리 수정하지 않는다. load_kg는 계속 한 개당 무게이며 합산으로 바꾸지 않는다.
+전체 시험 **121 passed in 53.29s**, 변경 파일 Ruff F·Black 확인 통과.
+화살표로 5→5.5kg/1→2개 입력, controller 전달, 실제 모의 세션 저장값,
+기존 판정의 생략/기본값 동등 비교, --include-load feature 두 열을 검사했다.
+실제 시험 로그: build/dumbbell_tests_final.txt. 실행 파일 해시/자체 시험은 WorkOrder/WINDOWS_EXE_BUILD.md.
+첫 재빌드 자체 시험은 writer_shutdown_timeout으로 실패했고 로그는
+build/dumbbell_first_exe_failure.json에 보존했다. EXE 점검용 synthetic 세션에만
+종료 대기 20초·전체 완료 대기 45초를 적용했다. 일반 수집의 기본 watchdog 정책은 유지한다.
+EXE 점검은 실장치 지연이나 성능을 검증하는 시험이 아니며, 단발 지연의 원인은 미확정이다.
+최종 EXE 자체 시험 및 Python 경로 제거 독립 실행 모두 exit0/ok=true.
+독립 실행 EMG/라벨492행·영상21프레임·validator 오류0. EXE185,545,879 bytes,
+SHA256 5dcc1cebf212afda04367bcfef5334a5c30b6e00a8018cb5f2d9c0b02221190f.
+
+## 2026-10-26 — 수집 화면 필수 정보만 표시
+
+기본 v3에서 선택 참가자 정보·방문 상태 설문·계획 반복·휴식 입력을 제외했다.
+필수 참가자/측정/전극 정보·준비·명시적 동의를 남기고, 모델/프로토콜/Mock/진단은
+별도 장치·진단 설정 창으로, 검토/export/복구는 저장 데이터 관리 메뉴로 옮겼다.
+방문 ID는 날짜로 자동 생성하며 영상 내보내기 동의는 False를 유지한다.
+ParticipantForm(required_only=True)는 숨겨진 선택값도 새 모델에 포함하지 않는다.
+v2 입력·기존 기록은 유지했다. 오류가 없을 때 빈 오류 행도 숨겨 불필요한 간격을 줄였다.
+검증: **120 passed in 69.01s**, 수정 UI Ruff F 통과. 맑은 고딕을 직접 로드하여
+1100×780/640×480 화면 배치와 고정 중지 버튼을 확인했다(build/minimal_collection*.png).
+실행 파일도 새 화면으로 재빌드하며 결과/해시는 WorkOrder/WINDOWS_EXE_BUILD.md에 기록한다.
+재빌드 완료: 185,545,242 bytes, SHA256 0178dcddfa12be71200d75dd3aabae9ad382a607f28198940dd06761907e4ec5.
+EXE 자체 시험 통과. Python 경로 제거 독립 실행은 첫 시도 영상 worker 종료 timeout으로
+실패하여 로그를 보존했고, 동일 조건 재실행은 exit0/ok=true(EMG/라벨493행·영상21프레임).
+단발 지연 원인은 미확정이며 실장치 연결은 확인하지 않았다.
+
+## 2026-10-26 — 코드 리뷰 F1~F6 후속 수정
+
+시작 HEAD: 829e24c932dbaaaf61bacc8b7dd449decdff6df4 (리뷰 기준과 동일).
+baseline 81 passed/13.63s, 새 최소 재현 6 failed/9.35s를 실제 실행했다.
+F1 측정/가용 시각·epoch mapping, F2 창 품질, F3 수집 watchdog·bounded 종료,
+F4 세션 격리·transactional export, F5 부분 반복·시도 편집,
+F6 독립 완료 평가·조정·CAS·복구를 구현했다.
+전체 회귀: **118 passed in 68.48s**. 합성 새 예제의 validator 무결성 오류0,
+품질500Hz/coverage1.0/gap2ms, strict export15예제(빈 validation/test 명시).
+계약: schema3.0.0, alignment-1, emg-quality-1(PILOT), watchdog-1, review-2, review-fixes-1.
+원본 자료·영상·v2 reader는 유지했다. 과거 근거 없는 확정은 provisional로 취급한다.
+상세 재현·수정 위치·실행 명령·호환성: WorkOrder/CODE_REVIEW_FIX_REPORT.md.
+Windows 재빌드/자체 점검 결과는 WorkOrder/WINDOWS_EXE_BUILD.md에 기록한다.
+재빌드·Python 경로 제거 독립 실행 모두 exit0/ok=true. EXE 185,545,037 bytes,
+SHA256 637808f2c7a0cb37f1c33723fad7d7e39c3f398783d7e46acf37b701f9a0bbac.
+독립 점검에서 EMG/통합 라벨500행·영상22프레임, validator 오류0,
+작은 창/한국어 종료 선택지 확인. 소프트웨어 TODO는 완료했다.
+실제 장치 물리 동기와 파일럿 측정은 장치 미사용으로 미검증이다.
+
 ## 2026-10-26 — 화면 크기 조절·종료 사유 한국어 표시
 
 수집·검토 창에 최소화/최대화 버튼과 크기 조절 손잡이를 추가하고 시작 크기를 모니터 가용 영역에 맞춘다.

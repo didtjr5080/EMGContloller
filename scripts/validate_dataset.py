@@ -78,24 +78,34 @@ def validate(dataset_root: Path) -> list[str]:
         if (session_dir / "events.csv.part").exists():
             errors.append(f"[{session_id}] leftover events.csv.part found")
 
-        if row.get("participant_id") and row["participant_id"] not in known_participant_ids:
+        if (
+            row.get("participant_id")
+            and row["participant_id"] not in known_participant_ids
+        ):
             errors.append(
                 f"[{session_id}] participant_id {row['participant_id']!r} not in "
                 "participants_public.csv"
             )
 
-        if not metadata_path.exists() or not samples_path.exists() or not quality_path.exists():
+        if (
+            not metadata_path.exists()
+            or not samples_path.exists()
+            or not quality_path.exists()
+        ):
             continue
 
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if metadata.get("schema_version") == "3.0.0":
             from emg_collector.multimodal.validator import validate_session
+
             errors.extend(validate_session(session_dir))
             if metadata.get("participant_id") != row.get("participant_id"):
                 errors.append(f"[{session_id}] metadata.json participant_id mismatch")
             continue
         if metadata.get("schema_version") not in (None, "2.0.0"):
-            errors.append(f"[{session_id}] unsupported schema: {metadata.get('schema_version')}; v1 unsupported")
+            errors.append(
+                f"[{session_id}] unsupported schema: {metadata.get('schema_version')}; v1 unsupported"
+            )
             continue
         if metadata.get("session_id") != session_id:
             errors.append(f"[{session_id}] metadata.json session_id mismatch")
@@ -120,7 +130,9 @@ def validate(dataset_root: Path) -> list[str]:
         prev_time = None
         for idx, sample_row in enumerate(sample_rows):
             if int(sample_row[0]) != idx:
-                errors.append(f"[{session_id}] sample_index not contiguous at row {idx}")
+                errors.append(
+                    f"[{session_id}] sample_index not contiguous at row {idx}"
+                )
                 break
             unwrapped = int(sample_row[2])
             if prev_time is not None and unwrapped < prev_time:
@@ -133,14 +145,53 @@ def validate(dataset_root: Path) -> list[str]:
     registered = {row.get("session_id") for row in session_rows}
     for entry in (dataset_root / "sessions").glob("*"):
         if entry.is_dir() and entry.name not in registered:
-            errors.append(f"[{entry.name}] session directory absent from sessions.csv (possible interrupted recording)")
+            errors.append(
+                f"[{entry.name}] session directory absent from sessions.csv (possible interrupted recording)"
+            )
     return errors
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset_root", type=Path)
+    parser.add_argument(
+        "--quality-report",
+        type=Path,
+        help="v3 integrity and signal quality JSON report (separate results)",
+    )
     args = parser.parse_args()
+
+    if args.quality_report:
+        from emg_collector.multimodal.validator import inspect_session
+        from emg_collector.storage.multimodal_writer import atomic_json
+
+        reports = []
+        for session in sorted((args.dataset_root / "sessions").glob("*")):
+            if not session.is_dir():
+                continue
+            try:
+                metadata = json.loads(
+                    (session / "metadata.json").read_text(encoding="utf-8")
+                )
+                if metadata.get("schema_version") == "3.0.0":
+                    reports.append(
+                        {"session_id": session.name, **inspect_session(session)}
+                    )
+            except (OSError, ValueError, KeyError, TypeError):
+                reports.append(
+                    {
+                        "session_id": session.name,
+                        "integrity_errors": ["session_structure_invalid"],
+                        "quality": None,
+                    }
+                )
+        atomic_json(
+            args.quality_report,
+            {
+                "sessions": reports,
+                "note": "Integrity success does not imply training eligibility; export applies per-window quality.",
+            },
+        )
 
     try:
         errors = validate(args.dataset_root)

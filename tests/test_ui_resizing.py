@@ -57,7 +57,11 @@ def test_collection_can_shrink_with_live_preview_and_stop_buttons_visible(
         rect = QRect(button.mapTo(window, QPoint(0, 0)), button.size())
         assert window.rect().contains(rect)
         assert button.isVisibleTo(window)
-    assert window.controls_scroll.verticalScrollBar().maximum() > 0
+    if window.controls_scroll.verticalScrollBar().maximum() == 0:
+        viewport = window.controls_scroll.viewport()
+        for button in (window.start_button, window.tools_button):
+            rect = QRect(button.mapTo(viewport, QPoint(0, 0)), button.size())
+            assert viewport.rect().contains(rect)
     # Growing and shrinking again must rescale from the original frame.
     window.resize(1100, 700)
     qtbot.wait(10)

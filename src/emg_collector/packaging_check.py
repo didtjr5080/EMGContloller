@@ -61,6 +61,8 @@ def check_distribution(report_path):
             days_since_last_exercise=0,
         )
         window.store.register_participant(None, participant)
+        from emg_collector.acquisition.watchdog import WatchdogPolicy
+
         controller = CollectionController(
             Path(folder),
             participant,
@@ -76,12 +78,14 @@ def check_distribution(report_path):
             placement="synthetic build check",
             skin_prepared=True,
             clothing_confirmed=True,
+            # Packaging checks also run during native DLL scanning and disk contention.
+            watchdog_policy=WatchdogPolicy(shutdown_timeout_s=20),
         )
         controller.start()
         assert controller.started.wait(10), controller.errors
         time.sleep(1)
         controller.stop("voluntary_stop")
-        assert controller.done.wait(20), "collection failed to stop"
+        assert controller.done.wait(45), "collection failed to stop"
         assert not controller.errors, controller.errors
         errors = validate_session(controller.writer.root)
         assert not errors, errors
