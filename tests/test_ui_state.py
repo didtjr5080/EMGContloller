@@ -57,15 +57,15 @@ def test_consent_unchecked_blocks_recording(qtbot, tmp_path):
 def test_missing_required_field_blocks_recording_and_highlights(qtbot, tmp_path):
     window = MainWindow(tmp_path / "dataset")
     qtbot.addWidget(window)
-    # Leave name blank (required).
-    window.participant_form.age_spin.setValue(30)
+    # Age remains required; names are optional in the new collection flow.
+    window.participant_form.age_spin.setValue(0)
     window.participant_form.height_spin.setValue(175.0)
     window.participant_form.consent_checkbox.setChecked(True)
     window._connected = True
     window._update_can_start()
 
     assert window.acquisition_panel.start_button.isEnabled() is False
-    assert window.participant_form._error_labels["name"].text() != ""
+    assert window.participant_form._error_labels["age"].text() != ""
 
 
 def test_no_connection_blocks_recording(qtbot, tmp_path):

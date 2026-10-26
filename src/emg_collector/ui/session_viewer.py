@@ -91,6 +91,9 @@ class SessionData:
     def __init__(self, session_dir: Path) -> None:
         self.session_dir = Path(session_dir)
         self.is_unfinalized = False
+        version_metadata = self._read_json("metadata.json")
+        if version_metadata and version_metadata.get("schema_version") not in (None, "2.0.0"):
+            raise SessionLoadError("이 뷰어는 v2 전용입니다. v3는 멀티모달 검토 창을 사용하세요. v1은 지원하지 않습니다.")
 
         samples_path = self.session_dir / "samples.csv"
         samples_part_path = self.session_dir / "samples.csv.part"

@@ -56,6 +56,9 @@ def validate(dataset_root: Path) -> list[str]:
 
     for row in session_rows:
         session_id = row["session_id"]
+        if Path(session_id).name != session_id or session_id in (".", ".."):
+            errors.append(f"invalid session_id: {session_id!r}")
+            continue
         session_dir = dataset_root / "sessions" / session_id
         if not session_dir.is_dir():
             errors.append(f"[{session_id}] session directory missing: {session_dir}")
@@ -85,6 +88,15 @@ def validate(dataset_root: Path) -> list[str]:
             continue
 
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("schema_version") == "3.0.0":
+            from emg_collector.multimodal.validator import validate_session
+            errors.extend(validate_session(session_dir))
+            if metadata.get("participant_id") != row.get("participant_id"):
+                errors.append(f"[{session_id}] metadata.json participant_id mismatch")
+            continue
+        if metadata.get("schema_version") not in (None, "2.0.0"):
+            errors.append(f"[{session_id}] unsupported schema: {metadata.get('schema_version')}; v1 unsupported")
+            continue
         if metadata.get("session_id") != session_id:
             errors.append(f"[{session_id}] metadata.json session_id mismatch")
         if metadata.get("participant_id") != row.get("participant_id"):
@@ -118,6 +130,10 @@ def validate(dataset_root: Path) -> list[str]:
                 break
             prev_time = unwrapped
 
+    registered = {row.get("session_id") for row in session_rows}
+    for entry in (dataset_root / "sessions").glob("*"):
+        if entry.is_dir() and entry.name not in registered:
+            errors.append(f"[{entry.name}] session directory absent from sessions.csv (possible interrupted recording)")
     return errors
 
 
@@ -126,7 +142,10 @@ def main() -> None:
     parser.add_argument("dataset_root", type=Path)
     args = parser.parse_args()
 
-    errors = validate(args.dataset_root)
+    try:
+        errors = validate(args.dataset_root)
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+        errors = [f"dataset structure/field error: {type(exc).__name__}: {exc}"]
     if errors:
         print(f"FAILED: {len(errors)} issue(s) found")
         for err in errors:

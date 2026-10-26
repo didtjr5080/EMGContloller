@@ -55,3 +55,10 @@ def test_parser_never_raises_on_arbitrary_garbage():
         parser.parse_line(line)
 
     assert parser.diagnostics.valid_rows == 0
+
+
+def test_legacy_parser_never_accepts_new_muscle_header():
+    parser = LineParser()
+    parser.parse_line("time_us,biceps_env,biceps_raw,triceps_env,triceps_raw")
+    assert parser.profile_mismatch
+    assert parser.parse_line("1000,100,200,300,400") is None

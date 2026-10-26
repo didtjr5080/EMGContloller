@@ -124,6 +124,10 @@ class SerialWorker(QObject):
                 break
 
             parsed: ParsedSample | None = self.parser.parse_line(line)
+            if self.parser.profile_mismatch:
+                self.disconnected.emit("시리얼 헤더와 v2 상완요골근 프로파일이 다릅니다. 이두·삼두 수집은 v3 창을 사용하세요.")
+                self._running = False
+                break
             if parsed is not None:
                 result = self.time_unwrapper.unwrap(parsed.time_us)
                 if not result.reboot_detected:

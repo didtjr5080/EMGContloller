@@ -1,0 +1,12 @@
+...................................................................      [100%]
+67 passed in 9.38s
+
+2026-10-26 이두·삼두 + MediaPipe 동시 라벨링 추가 검증
+.venv/Scripts/python -m pytest -q
+76 passed in 11.69s
+Frozen executable portable self-test: exit 0; EMG=502, frames=26, labeled_samples=502, validator_errors=[]
+
+2026-10-26 화면 크기 조절·한국어 종료 사유 추가 검증
+.venv/Scripts/python -m pytest -q
+81 passed in 14.94s
+Frozen executable portable self-test: exit 0; compact_collection_and_review=true, korean_termination_choices=true; EMG=493, frames=23, labeled_samples=493, validator_errors=[]

@@ -67,6 +67,7 @@ class DatasetStore:
             return
         manifest = {
             "schema_version": SCHEMA_VERSION,
+            "supported_session_schema_versions": ["2.0.0", "3.0.0"],
             "app_version": APP_VERSION,
             "files": {
                 "participants_private.csv": PARTICIPANTS_PRIVATE_HEADER,
@@ -87,14 +88,15 @@ class DatasetStore:
     # -- participants --------------------------------------------------
 
     def register_participant(
-        self, private: ParticipantPrivate, public: ParticipantPublic
+        self, private: ParticipantPrivate | None, public: ParticipantPublic
     ) -> None:
-        if private.participant_id != public.participant_id:
+        if private is not None and private.participant_id != public.participant_id:
             raise ValueError("participant_id mismatch between private/public records")
-        with open(self._private_path, "a", newline="", encoding="utf-8") as fh:
-            csv.writer(fh).writerow(
-                [private.participant_id, private.name, private.created_at_utc]
-            )
+        if private is not None:
+            with open(self._private_path, "a", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(
+                    [private.participant_id, private.name, private.created_at_utc]
+                )
         with open(self._public_path, "a", newline="", encoding="utf-8") as fh:
             csv.writer(fh).writerow(
                 [
@@ -141,6 +143,18 @@ class DatasetStore:
         if not sessions_dir.exists():
             return incomplete
         for entry in sorted(sessions_dir.iterdir()):
+            metadata_path = entry / "metadata.json"
+            if entry.is_dir() and metadata_path.exists():
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    if metadata.get("schema_version") == "3.0.0":
+                        manifest_path = entry / "completion_manifest.json"
+                        if not manifest_path.exists() or json.loads(manifest_path.read_text(encoding="utf-8")).get("status") != "complete":
+                            incomplete.append(entry.name)
+                        continue
+                except (OSError, ValueError):
+                    incomplete.append(entry.name)
+                    continue
             if entry.is_dir() and (entry / SAMPLES_PART_NAME).exists():
                 incomplete.append(entry.name)
         return incomplete
@@ -148,6 +162,11 @@ class DatasetStore:
     def recover_session(self, session_id: str) -> tuple[Path, Path]:
         """Finalize a crashed session's .part files in place, without deleting data."""
         session_dir = self.session_dir(session_id)
+        metadata_path = session_dir / "metadata.json"
+        if metadata_path.exists() and json.loads(metadata_path.read_text(encoding="utf-8")).get("schema_version") == "3.0.0":
+            from emg_collector.storage.multimodal_writer import recover
+            recover(session_dir)
+            return session_dir / SAMPLES_FINAL_NAME, session_dir / EVENTS_FINAL_NAME
         samples_part = session_dir / SAMPLES_PART_NAME
         events_part = session_dir / EVENTS_PART_NAME
         if not samples_part.exists():
@@ -159,10 +178,14 @@ class DatasetStore:
             fh.flush()
             os.fsync(fh.fileno())
         samples_final = session_dir / SAMPLES_FINAL_NAME
+        if samples_final.exists():
+            raise FileExistsError(f"recovery would overwrite existing data: {samples_final}")
         os.replace(samples_part, samples_final)
 
         events_final = session_dir / EVENTS_FINAL_NAME
         if events_part.exists():
+            if events_final.exists():
+                raise FileExistsError(f"recovery would overwrite existing data: {events_final}")
             with open(events_part, "a", encoding="utf-8") as fh:
                 fh.flush()
                 os.fsync(fh.fileno())

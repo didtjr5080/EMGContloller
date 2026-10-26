@@ -53,6 +53,7 @@ class LineParser:
 
     def __init__(self) -> None:
         self.diagnostics = ParserDiagnostics()
+        self.profile_mismatch = False
 
     def parse_line(self, line: str) -> ParsedSample | None:
         stripped = line.strip()
@@ -63,6 +64,14 @@ class LineParser:
 
         if stripped == SERIAL_HEADER_LINE:
             self.diagnostics.header_lines += 1
+            return None
+
+        if stripped.startswith("time_us,"):
+            self.profile_mismatch = True
+            self.diagnostics.malformed_rows += 1
+            return None
+        if self.profile_mismatch:
+            self.diagnostics.malformed_rows += 1
             return None
 
         if "," not in stripped:
@@ -83,7 +92,7 @@ class LineParser:
             self.diagnostics.malformed_rows += 1
             return None
 
-        if time_us < 0:
+        if not 0 <= time_us < 2**32:
             self.diagnostics.malformed_rows += 1
             return None
 

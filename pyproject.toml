@@ -21,6 +21,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+build = ["pyinstaller==6.10.0", "pefile==2023.2.7; sys_platform == 'win32'"]
+multimodal = [
+    "mediapipe==0.10.21",
+    "opencv-contrib-python==4.10.0.84",
+    "numpy==1.26.4",
+]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
@@ -34,5 +40,6 @@ emg-collector = "emg_collector.__main__:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 qt_api = "pyqt6"
 testpaths = ["tests"]

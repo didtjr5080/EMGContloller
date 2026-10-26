@@ -1,0 +1,21 @@
+{
+  "protocol_id": "unilateral_curl_pilot",
+  "version": "0.1.0",
+  "status": "PILOT",
+  "start_angle_deg": 155,
+  "top_angle_deg": 60,
+  "min_rom_deg": 80,
+  "hysteresis_deg": 5,
+  "debounce_ns": 80000000,
+  "phase_timeout_s": 8,
+  "min_duration_s": 0.5,
+  "max_duration_s": 12,
+  "max_trunk_tilt_deg": 20,
+  "max_upperarm_delta_deg": 25,
+  "violation_duration_s": 0.25,
+  "min_visibility": 0.6,
+  "max_pose_gap_ns": 150000000,
+  "target_sync_error_ms": 50,
+  "termination_rule": "Reviewer confirms first sustained failed attempt; later attempts excluded.",
+  "rest_rule": "Record actual rest; load change, assistance or extended rest is a deviation."
+}

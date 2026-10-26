@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from pydantic import ValidationError
+from emg_collector.ui.common import wrap_form_labels
 
 from emg_collector.models import (
     DominantArm,
@@ -73,8 +74,17 @@ class ParticipantForm(QWidget):
         self.exercise_sessions_spin = QSpinBox()
         self.exercise_sessions_spin.setRange(0, 999)
         self.exercise_minutes_spin = QSpinBox()
-        self.exercise_minutes_spin.setRange(0, 100000)
+        self.exercise_minutes_spin.setRange(-1, 100000)
+        self.exercise_minutes_spin.setValue(-1)
         self.exercise_minutes_spin.setSpecialValueText("미입력")
+        self.strength_sessions_spin = QSpinBox()
+        self.strength_sessions_spin.setRange(-1, 21)
+        self.strength_sessions_spin.setSpecialValueText("미입력")
+        self.strength_sessions_spin.setValue(-1)
+        self.strength_months_spin = QSpinBox()
+        self.strength_months_spin.setRange(-1, 1500)
+        self.strength_months_spin.setSpecialValueText("미입력")
+        self.strength_months_spin.setValue(-1)
         self.days_since_exercise_spin = QDoubleSpinBox()
         self.days_since_exercise_spin.setRange(0, 3650)
         self.dominant_arm_combo = QComboBox()
@@ -84,6 +94,7 @@ class ParticipantForm(QWidget):
         self.notes_warning_label = QLabel(
             "전화번호, 학번, 주소 등 식별 가능한 정보를 적지 마세요."
         )
+        self.notes_warning_label.setWordWrap(True)
         self.consent_checkbox = QCheckBox("연구 참여 동의를 확인했습니다.")
 
         self._error_labels: dict[str, QLabel] = {}
@@ -108,7 +119,7 @@ class ParticipantForm(QWidget):
         form.addRow("피험자 ID *", id_row)
         self._add_error_row(form, "participant_id")
 
-        form.addRow("이름 *", self.name_edit)
+        form.addRow("이름 (선택, private 저장)", self.name_edit)
         self._add_error_row(form, "name")
 
         form.addRow("나이 *", self.age_spin)
@@ -123,6 +134,12 @@ class ParticipantForm(QWidget):
         self._add_error_row(form, "exercise_sessions_per_week")
 
         form.addRow("주당 총 운동 시간(분)", self.exercise_minutes_spin)
+        form.addRow("주당 근력운동 횟수 (최근 4주)", self.strength_sessions_spin)
+        form.addRow("근력운동 경력(개월)", self.strength_months_spin)
+        form.addRow(
+            "설문 기준",
+            QLabel("최근 4주의 평소 1주; 근력운동: 중량·머신·맨몸 저항운동"),
+        )
         form.addRow("최근 운동 후 경과일 *", self.days_since_exercise_spin)
         self._add_error_row(form, "days_since_last_exercise")
 
@@ -131,6 +148,7 @@ class ParticipantForm(QWidget):
         form.addRow("", self.notes_warning_label)
         form.addRow("", self.consent_checkbox)
 
+        wrap_form_labels(form)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
 
@@ -155,6 +173,8 @@ class ParticipantForm(QWidget):
             self.weight_spin,
             self.exercise_sessions_spin,
             self.exercise_minutes_spin,
+            self.strength_sessions_spin,
+            self.strength_months_spin,
             self.days_since_exercise_spin,
         ):
             widget.valueChanged.connect(self.changed.emit)
@@ -179,13 +199,21 @@ class ParticipantForm(QWidget):
         return None if self.weight_spin.value() == 0 else self.weight_spin.value()
 
     def _optional_minutes(self) -> int | None:
-        return None if self.exercise_minutes_spin.value() == 0 else self.exercise_minutes_spin.value()
+        return (
+            None
+            if self.exercise_minutes_spin.value() < 0
+            else self.exercise_minutes_spin.value()
+        )
 
-    def build_models(self) -> tuple[ParticipantPrivate, ParticipantPublic]:
+    def build_models(self) -> tuple[ParticipantPrivate | None, ParticipantPublic]:
         """Raise pydantic.ValidationError if the current input is invalid."""
-        private = ParticipantPrivate(
-            participant_id=self.participant_id_edit.text().strip(),
-            name=self.name_edit.text().strip(),
+        private = (
+            ParticipantPrivate(
+                participant_id=self.participant_id_edit.text().strip(),
+                name=self.name_edit.text().strip(),
+            )
+            if self.name_edit.text().strip()
+            else None
         )
         public = ParticipantPublic(
             participant_id=self.participant_id_edit.text().strip(),
@@ -196,6 +224,16 @@ class ParticipantForm(QWidget):
             dominant_arm=self.dominant_arm_combo.currentData(),
             exercise_sessions_per_week=self.exercise_sessions_spin.value(),
             exercise_minutes_per_week=self._optional_minutes(),
+            strength_sessions_per_week=(
+                None
+                if self.strength_sessions_spin.value() < 0
+                else self.strength_sessions_spin.value()
+            ),
+            strength_training_months=(
+                None
+                if self.strength_months_spin.value() < 0
+                else self.strength_months_spin.value()
+            ),
             days_since_last_exercise=self.days_since_exercise_spin.value(),
             participant_notes=self.notes_edit.toPlainText().strip(),
         )

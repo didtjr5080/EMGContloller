@@ -1,5 +1,41 @@
 # EMG Dataset Collector
 
+Windows 실행 파일은 `dist/EMGController.exe`입니다. Python 설치 없이 파일을 더블클릭하면 됩니다.
+MediaPipe 모델도 포함되어 있으며, 데이터는 실행 파일 옆의 `datasets` 폴더에 저장됩니다.
+실행 파일은 쓰기 가능한 폴더에 두세요. 재빌드: `powershell -File scripts/build_windows.ps1`.
+[실행 파일 빌드·검증 결과](WorkOrder/WINDOWS_EXE_BUILD.md)
+
+실행 파일은 Git LFS로 저장합니다. Git으로 복제했다면 `git lfs install`과 `git lfs pull`로 내려받으세요.
+GitHub에서는 [실행 파일 페이지](https://github.com/didtjr5080/EMGContloller/blob/master/dist/EMGController.exe)의 다운로드 버튼을 사용하면 됩니다.
+
+창 모서리나 최대화 버튼으로 크기를 바꾸고, 패널 사이 경계선을 드래그해 비율을 조절할 수 있습니다.
+작은 창에서는 설정·검토 영역을 스크롤하며, 기록 중지·통증 중지 버튼은 항상 아래쪽에 보입니다.
+수집·검토 화면의 종료 사유 8개는 모두 한국어로 표시됩니다.
+
+**2026-10-26: 이두·삼두 + MediaPipe v3 PILOT 수집·검토·학습 입력 export를 추가했습니다.**
+실행하면 **이두·삼두 EMG + MediaPipe 동시 측정·자동 라벨링** 화면이 바로 열립니다.
+한쪽 팔에 이두·삼두 센서를 함께 부착하고, 카메라 자세 추론과 같은 세션에서 기록합니다.
+`labeled_samples.csv`에 두 근육의 RAW/ENV와 MediaPipe 동작 단계·반복 판정을 시간으로 연결해 저장합니다.
+자동 판정은 검토 전 provisional이며 가림/긴 시간 공백은 unknown입니다.
+기존 상완요골근 v2 화면은 `--legacy-v2`로 열 수 있고, 과거 파일의 의미를 유지합니다.
+
+- [설치·수집·검토·export 안내](WorkOrder/MULTIMODAL_V3_GUIDE.md)
+- [v3 데이터 사전](WorkOrder/MULTIMODAL_V3_SCHEMA.md)
+- [실행 로그](WorkOrder/MULTIMODAL_EXECUTION_LOG.md), [실제 시험 출력](WorkOrder/MULTIMODAL_TEST_RESULTS.txt)
+
+검증: 자동 시험 81개 통과, 작은 창 크기 조절·한국어 종료 사유·synthetic 영상·통합 라벨·검토·validator·학습 export 확인.
+실제 카메라 연결과 ESP32 동시 기록·동기 오차·동작 기준은 미검증이므로 현재는 PILOT 전용입니다.
+
+```powershell
+.venv\Scripts\python -m pip install -e ".[dev,multimodal]"
+.venv\Scripts\python scripts/download_pose_model.py
+.venv\Scripts\python -m emg_collector
+```
+
+## 기존 v2 수집기 설명 (`--legacy-v2`)
+
+아래 내용은 이두·상완요골근용 기존 수집 모드 설명입니다. 기본 이두·삼두 + MediaPipe 모드는 위 안내를 사용하세요.
+
 ESP32 기반 근전도(EMG) 데이터셋 수집용 데스크톱 앱 (Python + PyQt6). `WorkOrder/Codex_EMG_Dataset_Collector_Work_Order.md`의 요구사항을 구현한다.
 
 ESP32에 연결된 MyoWare 2.0 센서 2개(이두근, 상완요골근)로부터 `time_us,biceps_env,biceps_raw,brachio_env,brachio_raw` 형식의 500 Hz CSV 스트림(460800 baud)을 받아 실시간으로 표시하고, 원본 ADC 값을 손실 없이 저장하며, 피험자/세션 메타데이터를 신호 데이터와 분리해서 관리한다. 하드웨어 없이도 모의 신호 모드로 전체 기능을 사용/테스트할 수 있다.

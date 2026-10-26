@@ -1,5 +1,122 @@
 # EMG Dataset Collector — 진행 현황 공유
 
+## 2026-10-26 — 화면 크기 조절·종료 사유 한국어 표시
+
+수집·검토 창에 최소화/최대화 버튼과 크기 조절 손잡이를 추가하고 시작 크기를 모니터 가용 영역에 맞춘다.
+고정 영상 크기를 제거해 원본 비율로 자동 축소/확대한다. 패널 경계선은 드래그로 조절하며,
+설정·조작·검토 입력은 스크롤된다. 수집 중지·통증 중지 버튼은 화면 아래에 고정한다.
+긴 동의/설문/설명 문구도 줄바꿈되므로 작은 창에서 입력란이 밀려나지 않는다.
+
+종료 사유 8개는 수집·검토 화면 모두 한국어로 표시한다. 저장 enum 코드는 보존해 기존 데이터·판정과 호환된다.
+변경 중심: `ui/common.py`, `multimodal_panel.py`, `multimodal_review.py`, `participant_form.py`.
+시험: **81 passed in 14.94s**. 640×480/800×600 크기, 영상 프레임 크기 변화,
+중지 버튼 가시성·스크롤, 동의 문구 클릭, 한국어 표시/저장값을 확인했다.
+맑은 고딕을 적용한 640×480 수집·검토 화면도 별도 확인했다.
+exe 자체 점검에 작은 창과 한국어 선택지 검사를 추가했다. 산출물 검증 결과는 `WorkOrder/WINDOWS_EXE_BUILD.md`.
+재빌드 exe의 독립 실행 점검 exit 0, 작은 창/한국어 검사 true, 모의 EMG·라벨 493행과 영상 23프레임,
+validator 오류 없음. Python 경로를 제외하고 다른 작업 폴더에서 실행한 결과다.
+
+## 2026-10-26 — 이두·삼두 + MediaPipe 동시 수집·라벨 연결 기본값
+
+사용자 확인에 따라 실행 기본 화면을 이두·삼두 + MediaPipe 수집 창으로 변경했다.
+이두·상완요골근 기존 화면은 `--legacy-v2`로 명시적으로 연다.
+한 번의 시작/중지로 같은 팔의 두 근육 4 ADC와 카메라/MediaPipe를 함께 기록한다.
+
+기록 종료 시 `labeled_samples.csv`를 자동 생성한다. 각 EMG 행의 이두·삼두 ENV/RAW,
+host/device 시각과 MediaPipe frame/각도/동작 단계/반복 ID/validity를 함께 저장한다.
+행 번호가 아닌 시각으로 연결하고, 가림·긴 gap은 unknown으로 보존한다.
+자동 파일은 provisional 원본으로 보존한다. 검토 화면에서 저장된 revision의
+라벨+EMG를 새 CSV로 내보낼 수 있으며, 원본/자동 판정은 덮어쓰지 않는다.
+자동 라벨은 사후 동작/반복 라벨이며 근육 전기활성이나 실시간 예측 입력의 정답 특징이 아니다.
+
+시험: **76 passed in 11.69s**. 신규 확인: 기본 화면, 두 근육 값 보존·동일 시각 라벨,
+미래/오래된 pose·가림 unknown, legacy 재해석 차단, 검토 revision CSV와 자동 원본 불변.
+예제 `datasets/simultaneous_20261026`: EMG+라벨 **24,001행**, validator 통과.
+샘플 100은 이두 RAW 2000 / 삼두 RAW 2100 / pose frame 2 / concentric / attempt A1 / valid.
+
+`dist/EMGController.exe`를 재빌드했다. 단독 실행 점검 exit 0, 기본 모드 확인,
+EMG 502행·영상 26프레임·MediaPipe 연결 라벨 502행, validator 오류 없음.
+Python 경로를 제외하고 다른 작업 폴더에서 실행한 결과다.
+상세 산출물 정보: `WorkOrder/WINDOWS_EXE_BUILD.md`.
+실장치 시간 오차/동작 기준은 여전히 미검증이며 PILOT 제한을 유지한다.
+
+## 2026-10-26 — Windows 단일 실행 파일 추가
+
+`dist/EMGController.exe`를 생성했다. Python과 MediaPipe 모델 포함, 약 177 MiB.
+더블클릭 실행하며 수집 자료는 exe 옆 `datasets`에 저장한다.
+소스 시험 **69개 통과**, exe 자체의 모델 추론·Qt 화면·모의 EMG/MJPG 수집·검토·validator 통과.
+다른 작업 폴더 및 Python 경로를 제외한 PATH에서도 self-test exit 0을 확인했다.
+재현 빌드는 `scripts/build_windows.ps1`, 세부 결과는 `WorkOrder/WINDOWS_EXE_BUILD.md`.
+실장치 검증과 PILOT 제한은 아래 보고와 같다.
+
+## 2026-10-26 — 멀티모달 지시서 실행 결과
+
+대상: `WorkOrder/EMGController_Multimodal_Collection_Work_Order.md`.
+시작 HEAD `58f8d4ab5135e2251b794cdeba54bb60cf4121db`는 지시서와 같았다.
+사용자가 제공한 미추적 지시서는 보존했다. 기존 아래 보고는 10월 6일의 과거 기록이다.
+
+### 이번 구현
+
+- v3.0.0 명시적 이두·삼두 프로파일, 기존 v2 상완요골근 reader/뷰어/validator 유지.
+  신규 펌웨어 별도 추가, legacy reference 보존. 양쪽 parser 모두 다른 근육 헤더의 묵시적 재해석 차단.
+- 익명 참가자·선택적 private 이름, 설문 0/미입력 분리, 운동 경력·방문 상태 스냅샷,
+  분리된 동의, 부착·복장·실제 팔/중량/휴식/계획 반복 확인 UI.
+- 기존 PyQt 창에서 v3 수집과 검토 진입. 카메라·EMG·MediaPipe·writer 독립 worker,
+  유계 큐, host timestamp/epoch, software clock fit, 원본 프레임 mapping과 MJPG 영상.
+- PILOT 프로토콜, debounce/hysteresis 반복 상태기계, partial/timeout/unknown 보존,
+  종료 사유·실패 시도 ID/유무, 즉시 통증 중단.
+- 영상·EMG·각도 공통 탐색, 수동 경계/판정 수정, append-only revision,
+  서로 다른 두 검토자 일치/조정 후 라벨 확정, 일치율/kappa/경계 오차 기록.
+- 파일별 hash/행수/영상 decode/프레임 매핑과 마지막 completion manifest.
+  큐 초과·디스크/부분 finalize는 incomplete. 복구는 원본 보존 복사본이며 자동 완료/정답 승격 금지.
+- participant 우선 split, 고정 시간/최근 K 반복 causal window, tabular/sequence+mask,
+  EMG/동작/결합 공통 index, 선택적 인적정보·중량, 검열 자료 제외, 미래 추론 제외,
+  allowlist export. 모델 학습/최종 모델 선정은 하지 않음.
+- synthetic 예제 생성기, schema 사전·수집/검토 안내·검증 스크립트와 실패/통합 시험.
+
+### 실제 실행 결과
+
+환경: Windows Python 3.12.8, PyQt6 6.7.0 / Qt 6.7.1, pydantic 2.13.4,
+pyserial 3.5, MediaPipe 0.10.21, opencv-contrib-python 4.10.0.84, NumPy 1.26.4.
+기본 환경의 경로/pyserial 미설치 오류를 분리한 후 기존 시험 33개 통과.
+최종 `.venv\Scripts\python -m pytest -q`: **67 passed in 9.38s**.
+출력: `WorkOrder/MULTIMODAL_TEST_RESULTS.txt`.
+
+| 명령/검사 | 실제 결과 |
+|---|---|
+| `scripts/create_synthetic_dataset.py datasets/synthetic_20261026` | 생성 완료: EMG 24,001행, 영상/pose 481프레임, 16시도, 2개 synthetic 검토 revision |
+| `scripts/validate_dataset.py datasets/synthetic_20261026` | `OK: dataset passed all integrity checks` |
+| `scripts/export_training_dataset.py datasets/synthetic_20261026 datasets/training_20261026 --synthetic --allow-pilot` | 15개 예제, 제외 없음; k=10/14/15 → 5/1/0 |
+| 같은 export에 `--last-k 3 --stride-reps 2` | 별도 출력 `datasets/training_k3_20261026`, 8개 예제 |
+| 공식 Pose Lite 모델 로딩 + 640×480 검은 영상 Tasks 추론 | 성공; landmark 0개 (빈 영상 예상 결과) |
+| 실제 카메라 index 0 open/read | 둘 다 False, 실제 카메라 수집 미검증 |
+| 직렬 포트 열거 | 포트 존재만 확인; ESP32 식별·연결·기록은 실행하지 않음 |
+
+로컬 synthetic 산출물과 모델은 `datasets/`, `models/` 아래이며 Git 제외.
+원본/학습 export의 경로 이름에 v2가 붙은 초기 디버깅 산출물도 모두 schema v3 synthetic이다.
+최종 확인용 경로는 위 `*_20261026`이다. 실제 참가자/개인 영상은 생성하지 않았다.
+
+### 완료 범위와 다음 TODO
+
+소프트웨어 자동 검증·모의 통합까지 완료. **본 수집 준비 완료로 판정하지 않는다.**
+
+1. 실제 ESP32 새 펌웨어의 컴파일/업로드, 센서 부착·배선·ADC/아날로그 anti-alias 대역 확인.
+2. 사용 가능한 실제 카메라로 측면 구도·노출/가림·영상 codec 재생과 장시간 동시 기록 검증.
+3. 공통 관측 이벤트/하드웨어 trigger를 설계하고 지연·동기 오차·유실률·실측 Hz/fps 측정.
+   현재 software marker/수신 회귀의 물리적 오차는 null이며 동기 목표 달성을 주장하지 않음.
+4. 교수 검토와 두 사람의 독립 파일럿으로 각도·템포·보상·종료 기준 및 판정 신뢰도 확정.
+   현재 프로토콜 0.1.0은 PILOT 전용이고 승인/freeze 전환은 제공하지 않는다.
+5. 실제 연구의 승인된 protocol·동기 품질 조건을 정한 뒤 본 수집 허용 gate를 확장.
+
+제한: 현 UI는 한 세션에 한 세트, 영상은 세트당 MJPG 한 segment, v1 미지원,
+복구된/손상된 영상의 자동 수리는 없음. 맹검 평가는 UI가 강제하지 않아 운영 절차가 필요.
+미세 재부팅과 timer jitter의 완전한 구분에는 펌웨어 boot ID가 필요하다.
+MDF/MNF·각도 ground truth 오차·물리적 sync 오차는 미검증으로 유지한다.
+
+인계 문서: `WorkOrder/MULTIMODAL_V3_GUIDE.md`, `WorkOrder/MULTIMODAL_V3_SCHEMA.md`,
+`WorkOrder/MULTIMODAL_EXECUTION_LOG.md`. 재현 실패 명령이 있다면 validator가 세션/stream/필드를 표시하며
+nonzero로 종료한다. 현재 자동 시험 실패 없음. 기존 과거 보고의 시험 수와 구별한다.
+
 > 기준 문서: `WorkOrder/Codex_EMG_Dataset_Collector_Work_Order.md`
 > 최종 갱신: 2026-10-06
 

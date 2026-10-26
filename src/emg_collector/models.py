@@ -60,6 +60,10 @@ class ParticipantPublic(BaseModel):
     dominant_arm: DominantArm = DominantArm.unspecified
     exercise_sessions_per_week: int = Field(ge=0, le=21)
     exercise_minutes_per_week: Optional[int] = Field(default=None, ge=0)
+    strength_sessions_per_week: Optional[int] = Field(default=None, ge=0, le=21)
+    strength_training_months: Optional[int] = Field(default=None, ge=0)
+    questionnaire_period: str = "typical week during the past 4 weeks"
+    strength_exercise_definition: str = "resistance training including free weights, machines and bodyweight"
     days_since_last_exercise: float = Field(ge=0)
     participant_notes: str = ""
 

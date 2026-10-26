@@ -90,11 +90,14 @@ class MainWindow(QMainWindow):
         self.plot_panel = PlotPanel()
         self.open_folder_button = QPushButton("저장 폴더 열기")
         self.load_session_button = QPushButton("저장된 세션 불러오기")
+        self.multimodal_button = QPushButton("이두·삼두 + MediaPipe 수집 / 검토 (v3 PILOT)")
+        self.multimodal_button.clicked.connect(self._open_multimodal)
 
         left_container = QWidget()
         left_layout = QVBoxLayout(left_container)
         left_layout.addWidget(self.participant_form)
         left_layout.addWidget(self.acquisition_panel)
+        left_layout.addWidget(self.multimodal_button)
         load_row = QHBoxLayout()
         load_row.addWidget(self.open_folder_button)
         load_row.addWidget(self.load_session_button)
@@ -168,6 +171,14 @@ class MainWindow(QMainWindow):
         ports = [p.device for p in list_ports.comports()]
         self.acquisition_panel.set_available_ports(ports)
 
+    def _open_multimodal(self) -> None:
+        if self._is_recording:
+            QMessageBox.warning(self, "기록 중", "현재 기록을 종료한 후 v3 수집을 시작하세요.")
+            return
+        self._on_disconnect_requested()
+        from emg_collector.ui.multimodal_panel import MultimodalDialog
+        MultimodalDialog(self.store, self).exec()
+
     def _open_dataset_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.root)))
 
@@ -180,6 +191,18 @@ class MainWindow(QMainWindow):
         )
         if not session_dir:
             return
+        import json
+        metadata_path = Path(session_dir) / "metadata.json"
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if metadata.get("schema_version") == "3.0.0":
+                    from emg_collector.ui.multimodal_review import MultimodalReviewDialog
+                    MultimodalReviewDialog(Path(session_dir), self).exec()
+                    return
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "읽기 실패", str(exc))
+                return
         # SessionViewerDialog never raises: a load failure (e.g. no
         # samples.csv in the chosen folder) renders as an in-dialog error
         # message instead, so the user still gets a window to close.
@@ -199,7 +222,14 @@ class MainWindow(QMainWindow):
         can_start = can_start_recording(
             self._connected, self.participant_form.consent_confirmed(), result.is_valid
         )
+        can_start = can_start and self._profile_ready()
         self.acquisition_panel.set_can_start(can_start)
+
+    def _profile_ready(self) -> bool:
+        if self._active_source_kind in (None, SOURCE_MOCK):
+            return True
+        return bool(self._worker and self._worker.parser.diagnostics.header_lines
+                    and not self._worker.parser.profile_mismatch)
 
     # -- connection -----------------------------------------------------
 
@@ -313,6 +343,8 @@ class MainWindow(QMainWindow):
         arrived, so a stuck connection (wrong baud rate, wrong port, no
         device sending) is visible instead of leaving the status panel
         frozen on its initial placeholder values."""
+        if not self._is_recording:
+            self._update_can_start()
         estimated_missing = self._quality.estimated_missing_samples if self._quality else 0
         self.acquisition_panel.set_error_counts(
             diag["malformed_rows"], diag["out_of_range_rows"], estimated_missing
@@ -409,13 +441,16 @@ class MainWindow(QMainWindow):
         if not self._connected:
             QMessageBox.warning(self, "연결 필요", "장치를 먼저 연결하세요.")
             return
+        if not self._profile_ready():
+            QMessageBox.warning(self, "헤더 확인 필요", "v2 상완요골근 헤더를 수신해야 합니다. 보드를 리셋하거나 v3 수집 창을 사용하세요.")
+            return
 
         private, public = self.participant_form.build_models()
         self._ensure_participant_registered(private, public)
 
         session_fields = self.acquisition_panel.session_field_values()
         self._session_id = generate_session_id()
-        self._participant_id = private.participant_id
+        self._participant_id = public.participant_id
         self._session_writer = self.store.create_session_writer(self._session_id)
         self._quality = QualityAccumulator()
         self._sample_index = 0
@@ -558,14 +593,14 @@ class MainWindow(QMainWindow):
         self._update_can_start()
 
     def _ensure_participant_registered(self, private, public) -> None:
-        if self._participant_already_registered(private.participant_id):
+        if self._participant_already_registered(public.participant_id):
             return
         self.store.register_participant(private, public)
 
     def _participant_already_registered(self, participant_id: str) -> bool:
         import csv
 
-        path = self.store.root / "participants_private.csv"
+        path = self.store.root / "participants_public.csv"
         if not path.exists():
             return False
         with open(path, newline="", encoding="utf-8") as fh:
@@ -584,8 +619,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes,
             )
             if reply == QMessageBox.StandardButton.Yes:
-                self.store.recover_session(session_id)
-                self._mark_session_status(session_id, "recovered")
+                try:
+                    self.store.recover_session(session_id)
+                    self._mark_session_status(session_id, "recovered")
+                except (OSError, ValueError) as exc:
+                    QMessageBox.warning(self, "복구 실패", f"원본을 보존했습니다: {session_id}\n{exc}")
 
     def _mark_session_status(self, session_id: str, status: str) -> None:
         # sessions.csv may not have a row yet if the crash happened before

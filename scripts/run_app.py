@@ -26,8 +26,13 @@ def main() -> None:
         default=Path.cwd() / "datasets",
         help="Directory where dataset_root will be created (default: ./datasets)",
     )
+    parser.add_argument(
+        "--legacy-v2",
+        action="store_true",
+        help="Open the legacy biceps/brachioradialis collector",
+    )
     args = parser.parse_args()
-    sys.exit(run(args.dataset_root))
+    sys.exit(run(args.dataset_root, legacy_v2=args.legacy_v2))
 
 
 if __name__ == "__main__":
