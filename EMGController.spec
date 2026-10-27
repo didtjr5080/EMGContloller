@@ -1,6 +1,7 @@
 # Rebuild: .venv/Scripts/python -m PyInstaller --noconfirm EMGController.spec
 from pathlib import Path
 import sys
+import os
 from PyInstaller.utils.hooks import collect_data_files
 
 root = Path(SPECPATH)
@@ -22,11 +23,13 @@ a = Analysis(
               'sphinx', 'docutils'],
     hooksconfig={'matplotlib': {'backends': ['Agg']}},
 )
-# Qt ships older CRT copies; mixing them with Python's CRT breaks MediaPipe DLL initialization.
+# Qt ships older CRT copies; use one installed CRT set for MediaPipe and Qt.
 for index, (destination, source, kind) in enumerate(a.binaries):
     name = Path(destination).name
     if name.lower().startswith(('msvcp140', 'vcruntime140', 'concrt140')):
-        runtime = Path(sys.base_prefix) / name
+        runtime = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32' / name
+        if not runtime.is_file():
+            runtime = Path(sys.base_prefix) / name
         if runtime.is_file():
             a.binaries[index] = (destination, str(runtime), kind)
 pyz = PYZ(a.pure)

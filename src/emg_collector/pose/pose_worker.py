@@ -17,12 +17,14 @@ class MediaPipePose:
             raise FileNotFoundError(
                 f"MediaPipe model missing: {path}; run python scripts/download_pose_model.py"
             )
-        self.sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        model_bytes = path.read_bytes()
+        self.sha256 = hashlib.sha256(model_bytes).hexdigest()
         if expected_sha256 and self.sha256 != expected_sha256:
             raise ValueError("MediaPipe model SHA-256 mismatch")
         self.model = vision.PoseLandmarker.create_from_options(
             vision.PoseLandmarkerOptions(
-                base_options=python.BaseOptions(model_asset_path=str(path)),
+                # The native loader cannot reliably open Korean Windows paths.
+                base_options=python.BaseOptions(model_asset_buffer=model_bytes),
                 running_mode=vision.RunningMode.VIDEO,
                 num_poses=1,
             )

@@ -447,9 +447,9 @@ class CollectionController:
         conn = None
         try:
             if not self.synthetic:
-                import serial
+                from emg_collector.acquisition.esp32_serial import open_esp32_stream
 
-                conn = serial.Serial(self.port, self.baud, timeout=0.5)
+                conn = open_esp32_stream(self.port, self.baud)
             parser = ProfileParser("biceps_triceps_v3", self.arm)
             unwrapper = TimeUnwrapper()
             epoch = 0
@@ -673,6 +673,7 @@ class CollectionController:
                 with self.snapshot_lock:
                     self.snapshot.update(
                         frame=frame.copy(),
+                        landmarks=[row.copy() for row in rows],
                         metrics=derived,
                         phase=self.detector.phase,
                         attempts=[
