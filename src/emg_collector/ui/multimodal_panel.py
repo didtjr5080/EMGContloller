@@ -1,7 +1,7 @@
 """Version 3 flow within the existing PyQt application."""
 
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 import time
 import uuid
 
@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from emg_collector.multimodal.controller import CollectionController
+from emg_collector.pose.overlay import draw_pose
 from emg_collector.multimodal.schema import Consent, ProfileParser, Termination, Visit
 from emg_collector.protocols import PilotProtocol
 from emg_collector.runtime_paths import default_model_path
@@ -68,6 +69,9 @@ class MultimodalDialog(QDialog):
         self.measurement_started = False
         self.preflight_ok = False
         self.preflight_thread = None
+        self.preflight_stop = Event()
+        self.preview_start_pending = False
+        self.preview_close_pending = False
         self.setWindowTitle("이두·삼두 EMG + MediaPipe 동시 측정·자동 라벨링 | PILOT")
         prepare_resizable_dialog(self)
         self.participant = ParticipantForm(required_only=True, single_measurement=True)
@@ -259,6 +263,7 @@ class MultimodalDialog(QDialog):
 
     def _invalidate(self, *args):
         self.preflight_ok = False
+        self.preflight_stop.set()
 
     def _protocol(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -285,7 +290,12 @@ class MultimodalDialog(QDialog):
 
     def _preflight(self):
         if self.preflight_thread and self.preflight_thread.is_alive():
+            self.preflight_stop.set()
+            self.preview_button.setEnabled(False)
             return
+        self.preflight_ok = False
+        self.preflight_stop = Event()
+        stop = self.preflight_stop
         options = (
             self.synthetic.currentData(),
             self.camera.value(),
@@ -293,7 +303,7 @@ class MultimodalDialog(QDialog):
             self.model.text(),
             self.arm.currentData(),
         )
-        self.preview_button.setEnabled(False)
+        self.preview_button.setText("점검 중지")
         self.status.setText("모델·카메라·헤더 점검 중 (최대 약 8초)...")
 
         def run():
@@ -309,7 +319,6 @@ class MultimodalDialog(QDialog):
 
                     frame, rows = synthetic_frame(0, time.monotonic_ns())
                 else:
-                    import serial
                     from emg_collector.pose.pose_worker import MediaPipePose
 
                     pose = MediaPipePose(
@@ -323,33 +332,46 @@ class MultimodalDialog(QDialog):
                             "카메라 읽기 실패; 카메라 인덱스·권한·연결을 확인하세요."
                         )
                     rows = pose.infer(frame, time.monotonic_ns())
-                    conn = serial.Serial(options[2], 460800, timeout=0.5)
+                    from emg_collector.acquisition.esp32_serial import open_esp32_stream
+
+                    conn = open_esp32_stream(options[2])
                     parser = ProfileParser("biceps_triceps_v3")
                     deadline = time.monotonic() + 5
                     sample = None
-                    while time.monotonic() < deadline and sample is None:
+                    while not stop.is_set() and time.monotonic() < deadline and sample is None:
                         line = conn.readline().decode("utf-8", errors="replace")
                         if not parser.header_seen and not line.startswith("time_us,"):
                             continue
                         sample = parser.parse(line, time.monotonic_ns())
+                    if stop.is_set():
+                        return
                     if sample is None:
                         raise RuntimeError(
                             "일치하는 헤더/샘플 없음: ESP32를 리셋하고 신규 펌웨어를 확인하세요."
                         )
-                result = metrics(
-                    {r["landmark_id"]: r for r in rows},
-                    frame.shape[1],
-                    frame.shape[0],
-                    options[4],
-                )
-                self.signals.result.emit(
-                    {
-                        "kind": "preflight",
-                        "ok": result["quality_mask"] == "ok",
-                        "frame": frame,
-                        "message": f"추적 {result['quality_mask']} / 팔꿈치 {result['elbow_angle_deg']}°; software-only 동기 오차 미측정 (PILOT)",
-                    }
-                )
+                if conn:
+                    conn.close()
+                    conn = None
+                while not stop.is_set():
+                    if options[0]:
+                        frame, rows = synthetic_frame(0, time.monotonic_ns())
+                    else:
+                        ok, frame = cap.read()
+                        if not ok:
+                            raise RuntimeError("카메라 프레임 수신 실패; 연결을 확인하고 다시 점검하세요.")
+                        rows = pose.infer(frame, time.monotonic_ns())
+                    result = metrics(
+                        {r["landmark_id"]: r for r in rows},
+                        frame.shape[1], frame.shape[0], options[4],
+                    )
+                    angle = result["elbow_angle_deg"]
+                    angle_text = f"{angle:.1f}°" if angle is not None else "확인 불가"
+                    self.signals.result.emit({
+                        "kind": "preflight", "ok": result["quality_mask"] == "ok",
+                        "frame": draw_pose(frame, rows, options[4]),
+                        "message": f"실시간 점검: 추적 {result['quality_mask']} / 팔꿈치 {angle_text}; 어깨·팔꿈치·손목·엉덩이를 화면에 맞추세요. 동기 오차 미측정 (PILOT)",
+                    })
+                    stop.wait(0.08)
             except Exception as exc:
                 self.signals.result.emit(
                     {"kind": "preflight", "ok": False, "message": str(exc)}
@@ -361,11 +383,24 @@ class MultimodalDialog(QDialog):
                     conn.close()
                 if pose:
                     pose.close()
+                self.signals.result.emit({"kind": "preflight_stopped"})
 
         self.preflight_thread = Thread(target=run, daemon=True)
         self.preflight_thread.start()
 
     def _result(self, result):
+        if result["kind"] == "preflight_stopped":
+            self.preflight_thread = None
+            self.preview_button.setText("카메라·시리얼·추적 점검")
+            self.preview_button.setEnabled(True)
+            if self.preview_close_pending:
+                self.close()
+            elif self.preview_start_pending:
+                self.preview_start_pending = False
+                self._start()
+            return
+        if result["kind"] == "preflight" and self.preflight_stop.is_set():
+            return
         self.status.setText(result["message"])
         if result["kind"] == "preflight":
             self.preflight_ok = result["ok"]
@@ -387,6 +422,10 @@ class MultimodalDialog(QDialog):
             self.status.setText("먼저 카메라·시리얼·추적 점검을 통과하세요.")
             return
         try:
+            if self.preflight_thread is not None:
+                self.preview_start_pending = True
+                self.preflight_stop.set()
+                return
             private, public = self.participant.build_models()
             consent = Consent(
                 research=self.participant.consent_confirmed(),
@@ -454,7 +493,9 @@ class MultimodalDialog(QDialog):
             return
         data = c.preview()
         if "frame" in data:
-            set_frame(self.video, data["frame"])
+            set_frame(self.video, draw_pose(
+                data["frame"], data.get("landmarks", []), c.arm, c.protocol.min_visibility
+            ))
         if "sample" in data:
             sample = data["sample"]
             self.trace.append(
@@ -579,6 +620,8 @@ class MultimodalDialog(QDialog):
             event.ignore()
             return
         if self.preflight_thread and self.preflight_thread.is_alive():
+            self.preview_close_pending = True
+            self.preflight_stop.set()
             event.ignore()
             return
         event.accept()
