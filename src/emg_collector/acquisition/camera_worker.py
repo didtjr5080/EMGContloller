@@ -65,13 +65,13 @@ def synthetic_frame(frame_id, start_ns, arm="right", occlusion=False):
 
 
 def capture_loop(controller):
-    import cv2
-
     cap = None
     encoder = None
     video_part = None
     count = 0
     try:
+        import cv2
+
         if not controller.synthetic:
             cap = cv2.VideoCapture(controller.camera_index)
             if not cap.isOpened():

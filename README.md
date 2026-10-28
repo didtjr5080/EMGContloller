@@ -32,6 +32,12 @@ GitHub에서는 [실행 파일 페이지](https://github.com/didtjr5080/EMGContl
 실행하면 **이두·삼두 EMG + MediaPipe 동시 측정·자동 라벨링** 화면이 바로 열립니다.
 한쪽 팔에 이두·삼두 센서를 함께 부착하고, 카메라 자세 추론과 같은 세션에서 기록합니다.
 `labeled_samples.csv`에 두 근육의 RAW/ENV와 MediaPipe 동작 단계·반복 판정을 시간으로 연결해 저장합니다.
+
+관절 좌표는 `pose_landmarks.csv`, 선택한 팔의 팔꿈치 각도·몸통 기울기·상완 방향 변화량은 `pose_metrics.csv`에도 별도로 저장됩니다.
+통합 CSV는 검증된 측정 시각을 우선 사용하고, 미검증 시간 추정치 또는 수신 시각으로도 각도를 연결합니다.
+사용한 기준은 `pose_alignment_basis`, 연결 시각은 `pose_alignment_host_ns`에 기록됩니다.
+실장치의 소프트웨어 시간 추정은 `alignment_unverified`로 유지되며, 동기화 검증을 의미하지 않습니다.
+추적 실패 또는 허용 시간 간격을 벗어난 프레임의 각도는 공란으로 저장됩니다.
 자동 판정은 검토 전 provisional이며 가림/긴 시간 공백은 unknown입니다.
 기존 상완요골근 v2 화면은 `--legacy-v2`로 열 수 있고, 과거 파일의 의미를 유지합니다.
 

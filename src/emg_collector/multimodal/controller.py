@@ -204,7 +204,7 @@ class CollectionController:
                 "labeling": {
                     "source": "mediapipe_pose",
                     "sample_labels_file": "labeled_samples.csv",
-                    "alignment": "host_receive_vs_capture_previous_neighbor_software_only",
+                    "alignment": "measurement_estimate_or_host_receive_vs_capture_previous_neighbor_software_only",
                     "mode": "retrospective_provisional; review required for confirmed repetitions",
                 },
                 "participant_id": self.participant.participant_id,

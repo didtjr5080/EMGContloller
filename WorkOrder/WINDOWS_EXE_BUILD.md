@@ -1,4 +1,17 @@
-# Windows 실행 파일 — 2026-10-26
+# Windows 실행 파일 — 2026-10-28
+
+최신 재빌드: MediaPipe 각도 통합 저장 수정 포함.
+`dist/EMGController.exe`: 176,343,201 bytes.
+SHA-256: `aaddab2295faf7d31ef42d33679c7fdbf96721d95a13ed636bfe679c6ae4cb06`.
+
+자체 검사 `ok=true`: EMG/통합 라벨 501행, 영상 22프레임, validator 오류 0.
+Python 경로 제거·다른 작업 폴더 독립 실행: exit 0, `ok=true`,
+EMG/통합 라벨 493행, 영상 22프레임, validator 오류 0.
+Anaconda 기반 가상환경의 표준 라이브러리 DLL 누락을 빌드 spec에서 보완했다.
+검사 지연 시 원인을 확인하도록 자체 검사 보고서에 진행 단계를 기록한다.
+실제 센서·카메라 입력은 검증하지 않았다.
+
+아래는 이전 빌드 기록이다.
 
 산출물: `dist/EMGController.exe` (이름 입력·동의 체크·단회 측정 + 덤벨 무게/개수 + F1~F6 수정 포함, 단일 파일, 185,544,261 bytes, 약 177 MiB).
 SHA-256: `715a1a224077dd73ceacbd27496ca6b58887de9958aba6dd5c3565309b957ef0`.

@@ -26,6 +26,8 @@ LABEL_COLUMNS = [
     "alignment_status",
     "alignment_uncertainty_ns",
     "mapping_version",
+    "pose_alignment_basis",
+    "pose_alignment_host_ns",
     "biceps_env_adc",
     "biceps_raw_adc",
     "triceps_env_adc",
@@ -77,6 +79,16 @@ def labeled_rows(
             if alignment["alignment_status"] == "aligned" or allow_unverified
             else None
         )
+        basis = (
+            "validated_measurement"
+            if alignment["alignment_status"] == "aligned"
+            else "unavailable"
+        )
+        if allow_unverified and alignment["alignment_status"] != "aligned":
+            # Preserve estimates as estimates; receipt time is only a fallback.
+            basis = "estimated_measurement" if ns is not None else "host_receive"
+            if ns is None:
+                ns = int(sample["host_receive_ns"])
         set_index = bisect_right(set_starts, ns) - 1 if ns is not None else -1
         record = sets[set_index] if set_index >= 0 else None
         if record and (record.end_ns is None or ns > record.end_ns):
@@ -96,6 +108,8 @@ def labeled_rows(
             phase = max(phases)[1] if phases else "unknown"
         yield {
             **alignment,
+            "pose_alignment_basis": basis,
+            "pose_alignment_host_ns": ns,
             **{
                 key: sample[key]
                 for key in (
@@ -179,6 +193,7 @@ def write_labeled_samples(root, output=None, *, reviewed=False):
             synthetic=metadata["synthetic"],
             revision=revision,
             clock_mappings=load_clock_mappings(root),
+            allow_unverified=True,
             max_uncertainty_ns=policy.maximum_uncertainty_ns,
         ):
             writer.writerow(row)

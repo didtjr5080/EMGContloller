@@ -1,3 +1,4 @@
+import csv
 import json
 
 import pytest
@@ -112,6 +113,53 @@ def test_legacy_muscle_data_cannot_be_relabelled_as_triceps(tmp_path):
     )
     with pytest.raises(ValueError, match="explicit v3"):
         write_labeled_samples(tmp_path)
+
+
+@pytest.mark.parametrize("estimated", [False, True])
+def test_real_writer_saves_angles_with_unverified_alignment(tmp_path, estimated):
+    from emg_collector.storage.multimodal_writer import MultimodalWriter
+    from emg_collector.sync.clock_alignment import fit_clock
+
+    metadata = {
+        "schema_version": "3.0.0", "profile": "biceps_triceps_v3",
+        "synthetic": False,
+        "labeling": {"sample_labels_file": "labeled_samples.csv"},
+        "protocol": {"max_pose_gap_ns": 150_000_000},
+    }
+    writer = MultimodalWriter(tmp_path / "session", metadata)
+    writer.submit("samples.csv", sample(250))
+    writer.submit("pose_metrics.csv", {**pose(200, 10), "arm": "right"})
+    mappings = (
+        {"0": [fit_clock([(0, 0), (250000, 250000000), (500000, 500000000)])]}
+        if estimated else {}
+    )
+    manifest = writer.finalize({"epochs": mappings}, {})
+    assert manifest["status"] == "complete"
+    with (writer.root / "labeled_samples.csv").open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["biceps_raw_adc"] == "200" and row["triceps_raw_adc"] == "400"
+    assert row["elbow_angle_deg"] == "100" and row["pose_valid"] == "True"
+    assert row["alignment_status"] == row["label_status"] == "alignment_unverified"
+    assert row["pose_alignment_basis"] == (
+        "estimated_measurement" if estimated else "host_receive"
+    )
+    assert bool(row["measurement_host_ns"]) == estimated
+    assert not list(writer.root.glob("*.part"))
+
+
+@pytest.mark.parametrize(
+    "frame_time,quality", [(300, "ok"), (0, "ok"), (200, "tracking_loss")]
+)
+def test_unverified_export_rejects_future_stale_or_invalid_pose(frame_time, quality):
+    row = next(labeled_rows(
+        [sample(250)], [pose(frame_time, quality=quality)], [], [],
+        100_000_000, allow_unverified=True,
+    ))
+    assert row["elbow_angle_deg"] is None
+    assert row["pose_valid"] is False
+    assert row["phase"] == "unknown"
 
 
 def test_default_window_is_dual_emg_with_mediapipe(qtbot, tmp_path):

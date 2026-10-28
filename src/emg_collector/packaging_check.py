@@ -7,8 +7,19 @@ from tempfile import TemporaryDirectory
 
 
 def check_distribution(report_path):
+    report_path = Path(report_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def stage(name):
+        report_path.write_text(
+            json.dumps({"ok": False, "stage": name}), encoding="utf-8"
+        )
+
+    stage("import_opencv")
     import cv2
+    stage("import_mediapipe")
     import mediapipe
+    stage("import_application")
     import numpy as np
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication
@@ -26,6 +37,7 @@ def check_distribution(report_path):
     from emg_collector.ui.common import TERMINATION_LABELS
     from emg_collector.multimodal.schema import Termination
 
+    stage("load_model")
     model = MediaPipePose(
         default_model_path(),
         "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
@@ -37,6 +49,7 @@ def check_distribution(report_path):
         )
     finally:
         model.close()
+    stage("create_application")
     app = QApplication.instance() or QApplication([])
     with TemporaryDirectory(prefix="EMGController-check-") as folder:
         window = MainWindow(Path(folder))
@@ -81,12 +94,14 @@ def check_distribution(report_path):
             # Packaging checks also run during native DLL scanning and disk contention.
             watchdog_policy=WatchdogPolicy(shutdown_timeout_s=20),
         )
+        stage("synthetic_collection")
         controller.start()
         assert controller.started.wait(10), controller.errors
         time.sleep(1)
         controller.stop("voluntary_stop")
         assert controller.done.wait(45), "collection failed to stop"
         assert not controller.errors, controller.errors
+        stage("validate_session")
         errors = validate_session(controller.writer.root)
         assert not errors, errors
         import csv
@@ -98,6 +113,7 @@ def check_distribution(report_path):
         assert len(labeled_samples) == controller.sample_count
         assert all(row["label_source"] == "mediapipe_pose" for row in labeled_samples)
         assert any(row["pose_valid"] == "True" for row in labeled_samples)
+        stage("review_dialog")
         review = MultimodalReviewDialog(controller.writer.root)
         deadline = time.monotonic() + 10
         while review.data is None and time.monotonic() < deadline:
