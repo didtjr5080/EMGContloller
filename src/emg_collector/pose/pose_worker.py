@@ -43,7 +43,7 @@ class MediaPipePose:
             ),
             timestamp,
         )
-        finished = time.monotonic_ns()
+        finished = time.perf_counter_ns()
         rows = []
         if result.pose_landmarks:
             world = (

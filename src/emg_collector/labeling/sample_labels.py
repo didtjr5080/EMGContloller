@@ -40,6 +40,8 @@ LABEL_COLUMNS = [
     "elbow_angle_deg",
     "trunk_tilt_deg",
     "upperarm_delta_deg",
+    "auto_trunk_fixed",
+    "auto_pelvis_fixed",
     "pose_valid",
     "phase",
     "attempt_id",
@@ -134,6 +136,8 @@ def labeled_rows(
                 for key in ("elbow_angle_deg", "trunk_tilt_deg", "upperarm_delta_deg")
             },
             "pose_valid": pose_valid,
+            "auto_trunk_fixed": pose.get("trunk_fixed") if pose else None,
+            "auto_pelvis_fixed": pose.get("pelvis_fixed") if pose else None,
             "phase": phase,
             "attempt_id": attempt.attempt_id if attempt else "",
             "attempt_validity": attempt.validity if attempt else "unknown",

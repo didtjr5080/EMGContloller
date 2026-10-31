@@ -10,7 +10,7 @@ def synthetic_frame(frame_id, start_ns, arm="right", occlusion=False):
     import numpy as np
 
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    seconds = (time.monotonic_ns() - start_ns) / 1e9
+    seconds = (time.perf_counter_ns() - start_ns) / 1e9
     phase = seconds % 3 / 3
     angle_deg = 170 - 130 * (1 - abs(2 * phase - 1))
     # After fifteen full attempts, the sixteenth cannot reach the top.
@@ -37,8 +37,8 @@ def synthetic_frame(frame_id, start_ns, arm="right", occlusion=False):
         landmarks.append(
             {
                 "landmark_id": i,
-                "capture_host_ns": time.monotonic_ns(),
-                "infer_host_ns": time.monotonic_ns(),
+                "capture_host_ns": time.perf_counter_ns(),
+                "infer_host_ns": time.perf_counter_ns(),
                 "x": point[0] / 640,
                 "y": point[1] / 480,
                 "z": 0,
@@ -69,6 +69,7 @@ def capture_loop(controller):
     encoder = None
     video_part = None
     count = 0
+    last_captured = None
     try:
         import cv2
 
@@ -94,6 +95,13 @@ def capture_loop(controller):
                     raise RuntimeError("camera disconnected/read failed")
                 landmarks = None
             captured = controller.clock_ns()
+            # Do not invent capture times or feed duplicate times to the pose
+            # detector. A coarse/injected clock can timestamp two reads alike.
+            if last_captured is not None and captured <= last_captured:
+                controller.inference_skipped += 1
+                controller.stop_event.wait(0.001)
+                continue
+            last_captured = captured
             controller.last_frame_ns = captured
             height, width = frame.shape[:2]
             if video_part and encoder is None:

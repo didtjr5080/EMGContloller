@@ -35,6 +35,7 @@ class SerialPortLineSource:
 
     def __init__(self, serial_connection) -> None:
         self._serial = serial_connection
+        self._pending = b""
 
     def next_line(self) -> str:
         import serial  # local import: optional dependency for non-serial builds
@@ -45,7 +46,20 @@ class SerialPortLineSource:
             raise SerialDisconnected(str(exc)) from exc
         if raw == b"" and not self._serial.is_open:
             raise SerialDisconnected("serial port closed")
-        return raw.decode("utf-8", errors="replace")
+        # Timeouts can return a fragment of a row or the boot header.
+        self._pending += raw
+        if not self._pending.endswith(b"\n"):
+            if len(self._pending) > 4096:
+                self._pending = b""
+            return ""
+        line, self._pending = self._pending, b""
+        # ESP32 boot ROM logs use a different baud rate and may have no
+        # decodable newline before the application prints its CSV header.
+        # Recover that header even when boot bytes are attached to its front.
+        header_start = line.rfind(b"time_us,")
+        if header_start >= 0:
+            line = line[header_start:]
+        return line.decode("utf-8", errors="replace")
 
 
 class UnwrappedSample:

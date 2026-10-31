@@ -44,7 +44,7 @@ def check_distribution(report_path):
     )
     try:
         assert (
-            model.infer(np.zeros((480, 640, 3), dtype=np.uint8), time.monotonic_ns())
+            model.infer(np.zeros((480, 640, 3), dtype=np.uint8), time.perf_counter_ns())
             == []
         )
     finally:
@@ -60,6 +60,20 @@ def check_distribution(report_path):
         dialog.show()
         app.processEvents()
         assert dialog.width() <= 800 and dialog.height() <= 600
+        stage("live_emg_preview")
+        dialog.synthetic.setCurrentIndex(dialog.synthetic.findData(True))
+        dialog._preflight()
+        deadline = time.monotonic() + 10
+        while len(dialog.trace) < 20 and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert dialog.preflight_ok and len(dialog.line1.getData()[0]) >= 20
+        dialog._preflight()
+        deadline = time.monotonic() + 5
+        while dialog.preflight_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert dialog.preflight_thread is None
         assert all(
             dialog.reason.itemText(dialog.reason.findData(reason.value))
             == TERMINATION_LABELS[reason]
@@ -113,6 +127,25 @@ def check_distribution(report_path):
         assert len(labeled_samples) == controller.sample_count
         assert all(row["label_source"] == "mediapipe_pose" for row in labeled_samples)
         assert any(row["pose_valid"] == "True" for row in labeled_samples)
+        stage("record_browser_and_angle_truth")
+        from emg_collector.ui.recording_browser import RecordingBrowserDialog
+        from emg_collector.ui.ground_truth import GroundTruthDialog
+        from emg_collector.storage.ground_truth import TruthInterval, truth_history, export_training_truth
+
+        browser = RecordingBrowserDialog(Path(folder))
+        deadline = time.monotonic() + 5
+        while not browser.records and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert browser.records and browser.open_button.isEnabled()
+        truth = GroundTruthDialog(controller.writer.root)
+        truth.reviewer.setText("BUILD-CHECK")
+        truth._add(TruthInterval(start_s=0.1, end_s=0.5, elbow_angle_deg=90, trunk_fixed=True, pelvis_fixed=None))
+        truth._save()
+        assert truth_history(controller.writer.root)[-1]["data"]["intervals"][0]["elbow_angle_deg"] == 90
+        assert export_training_truth(controller.writer.root, Path(folder) / "angle_training.csv") > 0
+        truth.close()
+        browser.close()
         stage("review_dialog")
         review = MultimodalReviewDialog(controller.writer.root)
         deadline = time.monotonic() + 10
@@ -152,6 +185,11 @@ def check_distribution(report_path):
             "mediapipe_labeled_samples": len(labeled_samples),
             "compact_collection_and_review": True,
             "korean_termination_choices": True,
+            "live_emg_preview": True,
+            "timestamp_clock": "perf_counter_ns",
+            "recording_browser": True,
+            "manual_angle_body_truth": True,
+            "angle_truth_emg_export": True,
         }
     report_path = Path(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)

@@ -90,7 +90,7 @@ class MainWindow(QMainWindow):
         self.plot_panel = PlotPanel()
         self.open_folder_button = QPushButton("저장 폴더 열기")
         self.load_session_button = QPushButton("저장된 세션 불러오기")
-        self.multimodal_button = QPushButton("이두·삼두 + MediaPipe 수집 / 검토 (v3 PILOT)")
+        self.multimodal_button = QPushButton("전완·이두 + MediaPipe 수집 / 검토 (v3 PILOT)")
         self.multimodal_button.clicked.connect(self._open_multimodal)
 
         left_container = QWidget()

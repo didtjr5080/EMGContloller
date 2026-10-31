@@ -39,6 +39,11 @@ STREAMS = {
         "trunk_tilt_deg",
         "upperarm_delta_deg",
         "quality_mask",
+        "trunk_fixed",
+        "pelvis_fixed",
+        "trunk_delta_deg",
+        "pelvis_displacement_ratio",
+        "pelvis_tilt_delta_deg",
     ],
     "frame_timestamps.csv": [
         "frame_id",
