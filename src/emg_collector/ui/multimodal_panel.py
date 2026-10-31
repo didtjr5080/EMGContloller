@@ -29,12 +29,14 @@ from PyQt6.QtWidgets import (
 )
 
 from emg_collector.multimodal.controller import CollectionController
+from emg_collector.acquisition.serial_worker import SerialPortLineSource
 from emg_collector.pose.overlay import draw_pose
 from emg_collector.multimodal.schema import Consent, ProfileParser, Termination, Visit
 from emg_collector.protocols import PilotProtocol
-from emg_collector.runtime_paths import default_model_path
+from emg_collector.runtime_paths import default_model_path, resolve_model_path
 from emg_collector.ui.participant_form import ParticipantForm
 from emg_collector.ui.common import (
+    body_stability_text,
     TERMINATION_LABELS,
     VideoPreview,
     WrappingCheckBox,
@@ -68,11 +70,12 @@ class MultimodalDialog(QDialog):
         self.controller = None
         self.measurement_started = False
         self.preflight_ok = False
+        self.preflight_error = "먼저 카메라·시리얼 점검을 실행하세요."
         self.preflight_thread = None
         self.preflight_stop = Event()
         self.preview_start_pending = False
         self.preview_close_pending = False
-        self.setWindowTitle("이두·삼두 EMG + MediaPipe 동시 측정·자동 라벨링 | PILOT")
+        self.setWindowTitle("전완·이두 EMG + MediaPipe 동시 측정·자동 라벨링 | PILOT")
         prepare_resizable_dialog(self)
         self.participant = ParticipantForm(required_only=True, single_measurement=True)
         self.synthetic = QComboBox()
@@ -92,6 +95,10 @@ class MultimodalDialog(QDialog):
         self.camera = QSpinBox()
         self.camera.setRange(0, 20)
         self.model = QLineEdit(str(default_model_path()))
+        self.model_auto_button = QPushButton("모델 자동 찾기")
+        self.model_auto_button.clicked.connect(self._find_model)
+        self.model_browse_button = QPushButton("모델 파일 선택")
+        self.model_browse_button.clicked.connect(self._browse_model)
         self.arm = QComboBox()
         self.arm.addItem("오른팔", "right")
         self.arm.addItem("왼팔", "left")
@@ -121,7 +128,7 @@ class MultimodalDialog(QDialog):
         self.protocol_button.clicked.connect(self._protocol)
         self.preview_button = QPushButton("카메라·시리얼·추적 점검")
         self.preview_button.clicked.connect(self._preflight)
-        self.start_button = QPushButton("이두·삼두 + MediaPipe 동시 기록 시작")
+        self.start_button = QPushButton("전완·이두 + MediaPipe 동시 기록 시작")
         self.start_button.clicked.connect(self._start)
         self.stop_button = QPushButton("선택 사유로 즉시 중지")
         self.stop_button.setEnabled(False)
@@ -142,14 +149,19 @@ class MultimodalDialog(QDialog):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         self.video = VideoPreview("카메라 미리보기")
-        self.plot = pg.PlotWidget(title="실시간 RAW ADC | s1 이두 / s2 삼두")
+        self.plot = pg.PlotWidget(title="실시간 RAW ADC | s1 전완 / s2 이두")
         self.plot.setMinimumHeight(100)
+        self.plot.setLabel("bottom", "기록 시간", units="s")
+        self.plot.setLabel("left", "ADC")
+        self.plot.showGrid(x=True, y=True, alpha=0.2)
         self.plot.addLegend()
-        self.line1 = self.plot.plot(pen="#50aaff", name="이두")
-        self.line2 = self.plot.plot(pen="#ffaa50", name="삼두")
+        self.line1 = self.plot.plot(pen="#50aaff", name="전완")
+        self.line2 = self.plot.plot(pen="#ffaa50", name="이두")
         self.trace = []
         self.review_button = QPushButton("저장 기록 검토 / 수정")
         self.review_button.clicked.connect(self._review)
+        self.records_button = QPushButton("저장 기록 보기 / 정답 입력")
+        self.records_button.clicked.connect(self._records)
         self.export_button = QPushButton("검증 후 학습 입력 export")
         self.export_button.clicked.connect(self._export)
         self.recovery_button = QPushButton("미완료 데이터 확인·복구")
@@ -167,6 +179,8 @@ class MultimodalDialog(QDialog):
         settings_form = QFormLayout()
         for title, widget in [
             ("MediaPipe 모델", self.model),
+            ("", self.model_auto_button),
+            ("", self.model_browse_button),
             ("프로토콜", self.protocol_label),
             ("", self.protocol_button),
             ("입력 모드", self.synthetic),
@@ -229,6 +243,7 @@ class MultimodalDialog(QDialog):
             self.reason,
             self.failure,
             self.status,
+            self.records_button,
             self.tools_button,
         ]:
             controls_layout.addWidget(widget)
@@ -260,6 +275,25 @@ class MultimodalDialog(QDialog):
         self.camera.valueChanged.connect(self._invalidate)
         self.arm.currentIndexChanged.connect(self._invalidate)
         self.synthetic.currentIndexChanged.connect(self._invalidate)
+
+    def _find_model(self):
+        try:
+            path = resolve_model_path()
+            self.model.setText(str(path))
+            self.status.setText("모델 자동 탐색 완료: " + str(path))
+        except FileNotFoundError as exc:
+            self.status.setText(str(exc))
+
+    def _browse_model(self):
+        path, _ = QFileDialog.getOpenFileName(self, "MediaPipe 모델 선택", self.model.text(), "Pose model (*.task)")
+        if path:
+            self.model.setText(path)
+
+    def _records(self):
+        from emg_collector.ui.recording_browser import RecordingBrowserDialog
+
+        dialog = RecordingBrowserDialog(self.store.root, self)
+        dialog.exec()
 
     def _invalidate(self, *args):
         self.preflight_ok = False
@@ -293,7 +327,17 @@ class MultimodalDialog(QDialog):
             self.preflight_stop.set()
             self.preview_button.setEnabled(False)
             return
+        try:
+            self.model.setText(str(resolve_model_path(self.model.text())))
+        except FileNotFoundError as exc:
+            self.preflight_ok = False
+            self.preflight_error = str(exc)
+            self.status.setText(str(exc))
+            return
         self.preflight_ok = False
+        self.trace = []
+        self.line1.clear()
+        self.line2.clear()
         self.preflight_stop = Event()
         stop = self.preflight_stop
         options = (
@@ -310,14 +354,19 @@ class MultimodalDialog(QDialog):
             cap = None
             conn = None
             pose = None
+            serial_thread = None
+            stream_stop = Event()
+            stream_errors = []
             try:
                 import cv2
-                from emg_collector.pose.metrics import metrics
+                from emg_collector.pose.metrics import metrics, BodyStabilityTracker
+
+                stability = BodyStabilityTracker()
 
                 if options[0]:
                     from emg_collector.acquisition.camera_worker import synthetic_frame
 
-                    frame, rows = synthetic_frame(0, time.monotonic_ns())
+                    frame, rows = synthetic_frame(0, time.perf_counter_ns())
                 else:
                     from emg_collector.pose.pose_worker import MediaPipePose
 
@@ -331,45 +380,83 @@ class MultimodalDialog(QDialog):
                         raise RuntimeError(
                             "카메라 읽기 실패; 카메라 인덱스·권한·연결을 확인하세요."
                         )
-                    rows = pose.infer(frame, time.monotonic_ns())
+                    rows = pose.infer(frame, time.perf_counter_ns())
                     from emg_collector.acquisition.esp32_serial import open_esp32_stream
 
                     conn = open_esp32_stream(options[2])
+                    source = SerialPortLineSource(conn)
                     parser = ProfileParser("biceps_triceps_v3")
                     deadline = time.monotonic() + 5
                     sample = None
                     while not stop.is_set() and time.monotonic() < deadline and sample is None:
-                        line = conn.readline().decode("utf-8", errors="replace")
-                        if not parser.header_seen and not line.startswith("time_us,"):
+                        line = source.next_line()
+                        if not parser.header_seen and not line.strip().startswith("time_us,"):
                             continue
-                        sample = parser.parse(line, time.monotonic_ns())
+                        sample = parser.parse(line, time.perf_counter_ns())
                     if stop.is_set():
                         return
                     if sample is None:
                         raise RuntimeError(
                             "일치하는 헤더/샘플 없음: ESP32를 리셋하고 신규 펌웨어를 확인하세요."
                         )
-                if conn:
-                    conn.close()
-                    conn = None
+                def stream_emg():
+                    try:
+                        if options[0]:
+                            from emg_collector.acquisition.mock_source import MockSampleSource
+
+                            mock = MockSampleSource()
+                            preview_parser = ProfileParser("biceps_triceps_v3")
+                            preview_parser.parse(preview_parser.header, time.perf_counter_ns())
+                        batch = [] if options[0] else [sample.model_dump()]
+                        last_valid = time.monotonic()
+                        last_emit = last_valid
+                        while not stop.is_set() and not stream_stop.is_set():
+                            if options[0]:
+                                stop.wait(0.002)
+                                parsed = preview_parser.parse(mock.next_line(), time.perf_counter_ns())
+                            else:
+                                try:
+                                    parsed = parser.parse(source.next_line(), time.perf_counter_ns())
+                                except ValueError as exc:
+                                    if "header" in str(exc):
+                                        raise
+                                    parsed = None
+                            now = time.monotonic()
+                            if parsed is not None:
+                                batch.append(parsed.model_dump())
+                                last_valid = now
+                            if now - last_valid > 3:
+                                raise RuntimeError("근전도 수신이 3초 이상 중단되었습니다. 시리얼 연결을 확인하세요.")
+                            if batch and now - last_emit >= 0.05:
+                                self.signals.result.emit({"kind": "preflight_emg", "emg_samples": batch})
+                                batch = []
+                                last_emit = now
+                    except Exception as exc:
+                        stream_errors.append(str(exc))
+
+                serial_thread = Thread(target=stream_emg, daemon=True)
+                serial_thread.start()
                 while not stop.is_set():
+                    if stream_errors:
+                        raise RuntimeError(stream_errors[0])
                     if options[0]:
-                        frame, rows = synthetic_frame(0, time.monotonic_ns())
+                        frame, rows = synthetic_frame(0, time.perf_counter_ns())
                     else:
                         ok, frame = cap.read()
                         if not ok:
                             raise RuntimeError("카메라 프레임 수신 실패; 연결을 확인하고 다시 점검하세요.")
-                        rows = pose.infer(frame, time.monotonic_ns())
+                        rows = pose.infer(frame, time.perf_counter_ns())
                     result = metrics(
                         {r["landmark_id"]: r for r in rows},
                         frame.shape[1], frame.shape[0], options[4],
                     )
+                    result.update(stability.update({r["landmark_id"]: r for r in rows}, frame.shape[1], frame.shape[0]))
                     angle = result["elbow_angle_deg"]
                     angle_text = f"{angle:.1f}°" if angle is not None else "확인 불가"
                     self.signals.result.emit({
-                        "kind": "preflight", "ok": result["quality_mask"] == "ok",
+                        "kind": "preflight", "ok": True,
                         "frame": draw_pose(frame, rows, options[4]),
-                        "message": f"실시간 점검: 추적 {result['quality_mask']} / 팔꿈치 {angle_text}; 어깨·팔꿈치·손목·엉덩이를 화면에 맞추세요. 동기 오차 미측정 (PILOT)",
+                        "message": f"점검 중 · 아직 저장하지 않음 | 근전도 수신 중 | 팔꿈치 {angle_text} / {body_stability_text(result)}. 기록 시작 버튼을 누르면 저장합니다. 카메라를 고정하고 양쪽 어깨·골반을 화면에 맞추세요. 보이지 않는 부위는 판단 불가입니다.",
                     })
                     stop.wait(0.08)
             except Exception as exc:
@@ -377,6 +464,9 @@ class MultimodalDialog(QDialog):
                     {"kind": "preflight", "ok": False, "message": str(exc)}
                 )
             finally:
+                stream_stop.set()
+                if serial_thread:
+                    serial_thread.join(timeout=2)
                 if cap:
                     cap.release()
                 if conn:
@@ -399,11 +489,15 @@ class MultimodalDialog(QDialog):
                 self.preview_start_pending = False
                 self._start()
             return
-        if result["kind"] == "preflight" and self.preflight_stop.is_set():
+        if result["kind"] in ("preflight", "preflight_emg") and self.preflight_stop.is_set():
+            return
+        if result["kind"] == "preflight_emg":
+            self._plot_emg(result["emg_samples"])
             return
         self.status.setText(result["message"])
         if result["kind"] == "preflight":
             self.preflight_ok = result["ok"]
+            self.preflight_error = result["message"] if not result["ok"] else ""
             self.preview_button.setEnabled(True)
             if "frame" in result:
                 set_frame(self.video, result["frame"])
@@ -419,7 +513,7 @@ class MultimodalDialog(QDialog):
             )
             return
         if not self.preflight_ok:
-            self.status.setText("먼저 카메라·시리얼·추적 점검을 통과하세요.")
+            self.status.setText("기록을 시작할 수 없습니다: " + self.preflight_error)
             return
         try:
             if self.preflight_thread is not None:
@@ -487,6 +581,19 @@ class MultimodalDialog(QDialog):
         self.pain_button.setEnabled(False)
         self.status.setText("기록 중지됨. worker 종료·영상 닫기·manifest 검증 중...")
 
+    def _plot_emg(self, samples):
+        if samples:
+            if not self.trace:
+                self.trace_origin_ns = samples[0]["host_receive_ns"]
+            self.trace.extend(
+                ((s["host_receive_ns"] - self.trace_origin_ns) / 1e9,
+                 s["s1_raw"], s["s2_raw"])
+                for s in samples
+            )
+            self.trace = self.trace[-2500:]
+            self.line1.setData([v[0] for v in self.trace], [v[1] for v in self.trace])
+            self.line2.setData([v[0] for v in self.trace], [v[2] for v in self.trace])
+
     def _tick(self):
         c = self.controller
         if c is None:
@@ -496,14 +603,7 @@ class MultimodalDialog(QDialog):
             set_frame(self.video, draw_pose(
                 data["frame"], data.get("landmarks", []), c.arm, c.protocol.min_visibility
             ))
-        if "sample" in data:
-            sample = data["sample"]
-            self.trace.append(
-                (sample["host_receive_ns"] / 1e9, sample["s1_raw"], sample["s2_raw"])
-            )
-            self.trace = self.trace[-200:]
-            self.line1.setData([v[0] for v in self.trace], [v[1] for v in self.trace])
-            self.line2.setData([v[0] for v in self.trace], [v[2] for v in self.trace])
+        self._plot_emg(data.get("emg_samples", []))
         attempts = data.get("attempts", [])
         for attempt in attempts:
             if self.failure.findData(attempt["attempt_id"]) < 0:
@@ -544,6 +644,7 @@ class MultimodalDialog(QDialog):
             f"{c.phase} | EMG {c.sample_count}, frames {c.frame_count}, {data.get('phase','ready')} | "
             f"유효 {counts['valid']} / 무효 {counts['invalid']} / 불명 {counts['unknown']} | "
             f"각도 {data.get('metrics',{}).get('elbow_angle_deg')} | 추론 생략 {c.inference_skipped}"
+            + " | " + body_stability_text(data.get("metrics", {}))
         )
         if c.errors:
             self.status.setText("장애로 중지·미완료 저장 중: " + "; ".join(c.errors))

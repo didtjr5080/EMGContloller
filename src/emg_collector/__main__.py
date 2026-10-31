@@ -8,7 +8,7 @@ from emg_collector.app import run
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="이두·삼두 EMG + MediaPipe 동시 수집")
+    parser = argparse.ArgumentParser(description="전완·이두 EMG + MediaPipe 동시 수집")
     parser.add_argument("--dataset-root", type=Path)
     parser.add_argument(
         "--legacy-v2", action="store_true", help="기존 이두·상완요골근 화면 열기"

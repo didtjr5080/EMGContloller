@@ -103,3 +103,13 @@ def wrap_form_labels(form):
             item = form.itemAt(row, role)
             if item and isinstance(item.widget(), QLabel):
                 item.widget().setWordWrap(True)
+
+
+def body_stability_text(result):
+    def label(value):
+        if value is True or value == "True":
+            return "고정"
+        if value is False or value == "False":
+            return "움직임"
+        return "판단 불가"
+    return f"허리 {label(result.get('trunk_fixed'))} / 둔부 {label(result.get('pelvis_fixed'))} (영상 추정)"

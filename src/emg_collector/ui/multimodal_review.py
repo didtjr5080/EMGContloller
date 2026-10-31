@@ -46,6 +46,7 @@ from emg_collector.multimodal.schema import Termination
 from emg_collector.ui.multimodal_panel import set_frame
 from emg_collector.ui.review_editing import ReviewEditing
 from emg_collector.ui.common import (
+    body_stability_text,
     TERMINATION_LABELS,
     VideoPreview,
     WrappingCheckBox,
@@ -83,6 +84,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         )
         self.video = VideoPreview("영상 접근 동의 확인 중")
         self.emg = pg.PlotWidget(title="RAW EMG ADC")
+        self.emg.addLegend()
         self.angle = pg.PlotWidget(title="팔꿈치 각도 (deg)")
         self.angle.setXLink(self.emg)
         self.cursors = []
@@ -95,6 +97,8 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 10000)
         self.slider.valueChanged.connect(self._seek)
+        self.posture_status = QLabel("허리·둔부: 시간축에서 확인할 시점을 선택하세요.")
+        self.posture_status.setWordWrap(True)
         self.table = QTableWidget(0, 7)
         self.table.setMinimumHeight(100)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -141,10 +145,13 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save)
         self.labels_button = QPushButton(
-            "저장된 검토 라벨 + 이두·삼두 EMG CSV 내보내기"
+            "저장된 검토 라벨 + 전완·이두 EMG CSV 내보내기"
         )
         self.labels_button.setEnabled(False)
         self.labels_button.clicked.connect(self._export_labels)
+        self.truth_button = QPushButton("각도 / 허리·둔부 정답 입력")
+        self.truth_button.setEnabled(False)
+        self.truth_button.clicked.connect(self._ground_truth)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for label, widget in [
@@ -176,6 +183,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         timeline_layout.setContentsMargins(0, 0, 0, 0)
         timeline_layout.addWidget(self.media_splitter)
         timeline_layout.addWidget(self.slider)
+        timeline_layout.addWidget(self.posture_status)
         review_controls = QWidget()
         controls_layout = QVBoxLayout(review_controls)
         controls_layout.addLayout(form)
@@ -200,6 +208,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         controls_layout.addWidget(self.recover_button)
         controls_layout.addWidget(self.save_button)
         controls_layout.addWidget(self.labels_button)
+        controls_layout.addWidget(self.truth_button)
         controls_layout.addWidget(self.status)
         self.review_scroll = QScrollArea()
         self.review_scroll.setWidgetResizable(True)
@@ -267,9 +276,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         record = data["sets"][0]
         self.origin = data["metadata"]["start_host_ns"]
         self.end = record.end_ns or self.origin + 1
-        samples = [
-            r for r in data["aligned_samples"] if r["measurement_host_ns"] is not None
-        ]
+        samples = data["aligned_samples"]
         verified = bool(samples) and all(
             r["alignment_status"] == "aligned" for r in samples
         )
@@ -278,7 +285,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
             + (
                 "측정 시각 정렬"
                 if verified
-                else "정렬 미검증: 추정 시간축, 물리 동기 확인 필요"
+                else "정렬 미검증: 추정/수신 시간축, 물리 동기 확인 필요"
             )
         )
         for plot, cursor in zip((self.emg, self.angle), self.cursors):
@@ -286,14 +293,16 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
             plot.addItem(cursor)
         metrics = data["metrics"]
         self.emg.plot(
-            [(int(s["measurement_host_ns"]) - self.origin) / 1e9 for s in samples],
+            [(int(s["measurement_host_ns"] if s["measurement_host_ns"] is not None else s["host_receive_ns"]) - self.origin) / 1e9 for s in samples],
             [int(s["s1_raw"]) for s in samples],
             pen="#50aaff",
+            name="전완 (s1)",
         )
         self.emg.plot(
-            [(int(s["measurement_host_ns"]) - self.origin) / 1e9 for s in samples],
+            [(int(s["measurement_host_ns"] if s["measurement_host_ns"] is not None else s["host_receive_ns"]) - self.origin) / 1e9 for s in samples],
             [int(s["s2_raw"]) for s in samples],
             pen="#ffaa50",
+            name="이두 (s2)",
         )
         valid = [m for m in metrics if m["quality_mask"] == "ok"]
         self.angle.plot(
@@ -305,6 +314,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         self._render(data["sets"], data["attempts"])
         self.save_button.setEnabled(True)
         self.labels_button.setEnabled(True)
+        self.truth_button.setEnabled(True)
         self.video_allowed = bool(
             data["metadata"]["consent"]["video_storage"]
             and data["metadata"]["consent"]["video_access"]
@@ -317,12 +327,22 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
         self._mode_changed()
         self._seek(0)
 
+    def _ground_truth(self):
+        from emg_collector.ui.ground_truth import GroundTruthDialog
+
+        GroundTruthDialog(self.root, self).exec()
+
     def _seek(self, value):
         if not self.data:
             return
         ns = int(self.origin + (self.end - self.origin) * value / 10000)
         for cursor in self.cursors:
             cursor.setValue((ns - self.origin) / 1e9)
+        recent = [m for m in self.data["metrics"] if int(m["capture_host_ns"]) <= ns]
+        pose = recent[-1] if recent else {}
+        if pose and ns - int(pose["capture_host_ns"]) > 150_000_000:
+            pose = {}
+        self.posture_status.setText(f"{(ns-self.origin)/1e9:.3f}초 | 팔꿈치 {pose.get('elbow_angle_deg') or '판단 불가'} | " + body_stability_text(pose))
         if not self.video_allowed:
             return
         frames = [
@@ -434,7 +454,7 @@ class MultimodalReviewDialog(ReviewEditing, QDialog):
     def _export_labels(self):
         output, _ = QFileDialog.getSaveFileName(
             self,
-            "저장된 검토 라벨과 이두·삼두 EMG 내보내기",
+            "저장된 검토 라벨과 전완·이두 EMG 내보내기",
             str(self.root.parent.parent / (self.root.name + "_labeled.csv")),
             "CSV (*.csv)",
         )

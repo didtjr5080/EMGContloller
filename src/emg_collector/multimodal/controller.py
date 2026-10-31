@@ -15,10 +15,11 @@ from pydantic import PositiveInt, TypeAdapter
 
 from emg_collector.acquisition.camera_worker import capture_loop
 from emg_collector.acquisition.time_unwrapper import TimeUnwrapper
+from emg_collector.acquisition.serial_worker import SerialPortLineSource
 from emg_collector.acquisition.watchdog import StreamWatchdog, WatchdogPolicy
 from emg_collector.labeling.repetitions import RepetitionDetector
 from emg_collector.multimodal.schema import ProfileParser, SetRecord, channels
-from emg_collector.pose.metrics import metrics
+from emg_collector.pose.metrics import metrics, BodyStabilityTracker
 from emg_collector.pose.pose_worker import MediaPipePose
 from emg_collector.runtime_paths import default_model_path
 from emg_collector.storage.multimodal_writer import MultimodalWriter
@@ -59,7 +60,10 @@ class CollectionController:
         if not placement:
             raise ValueError("전극 위치를 입력하세요.")
         self.root = Path(root)
-        self.clock_ns = clock_ns or (lambda: time.monotonic_ns())
+        # Python 3.11 on Windows uses a coarse clock for monotonic_ns;
+        # QPC keeps rapid camera reads distinct. All capture/inference/serial
+        # timestamps use this same high-resolution time domain.
+        self.clock_ns = clock_ns or (lambda: time.perf_counter_ns())
         self.watchdog_policy = watchdog_policy or WatchdogPolicy()
         self.last_valid_sample_monotonic_ns = None
         self.last_frame_ns = None
@@ -95,6 +99,7 @@ class CollectionController:
         self.pose_queue = Queue(maxsize=2)
         self.snapshot_lock = Lock()
         self.snapshot = {}
+        self.emg_preview = deque(maxlen=2500)
         self.errors = []
         self.sample_count = 0
         self.frame_count = 0
@@ -170,7 +175,10 @@ class CollectionController:
 
     def preview(self):
         with self.snapshot_lock:
-            return self.snapshot.copy()
+            data = self.snapshot.copy()
+            data["emg_samples"] = list(self.emg_preview)
+            self.emg_preview.clear()
+            return data
 
     def _run(self):
         pose = None
@@ -250,6 +258,8 @@ class CollectionController:
                     "model_sha256": model_hash,
                     "metrics_version": "aspect_corrected_2d_v1",
                     "world_coordinates": "MediaPipe inferred; not clinical 3D",
+                    "body_stability": {"method": "fixed_camera_2d_first_visible_torso", "angle_threshold_deg": 5,
+                                       "pelvis_displacement_torso_ratio": 0.05, "status": "pilot_unvalidated"},
                 },
                 "emg": {
                     "baud": self.baud,
@@ -450,6 +460,7 @@ class CollectionController:
                 from emg_collector.acquisition.esp32_serial import open_esp32_stream
 
                 conn = open_esp32_stream(self.port, self.baud)
+                source = SerialPortLineSource(conn)
             parser = ProfileParser("biceps_triceps_v3", self.arm)
             unwrapper = TimeUnwrapper()
             epoch = 0
@@ -496,7 +507,7 @@ class CollectionController:
                         next_tick += 0.002
                         self.stop_event.wait(max(0, next_tick - time.monotonic()))
                 else:
-                    line = conn.readline().decode("utf-8", errors="replace")
+                    line = source.next_line()
                 if (
                     self.synthetic
                     and self.mock_receive_batch_delay_ms
@@ -521,6 +532,10 @@ class CollectionController:
                         last_raw = None
                         last_unwrapped = None
                     first_header = False
+                    continue
+                # Old rows and boot noise may precede the new header after
+                # reopening a port. Wait for it within the watchdog deadline.
+                if not parser.header_seen:
                     continue
                 try:
                     sample = parser.parse(line, received)
@@ -590,6 +605,7 @@ class CollectionController:
                         self.clock_mappings.setdefault(str(epoch), []).append(mapping)
                 with self.snapshot_lock:
                     self.snapshot.update(sample=sample.model_dump())
+                    self.emg_preview.append(sample.model_dump())
                 last_raw = sample.device_time_us
                 last_unwrapped = result.value_us
         except Exception as exc:
@@ -600,6 +616,7 @@ class CollectionController:
 
     def _pose(self, pose):
         baseline = None
+        stability = BodyStabilityTracker(self.protocol.min_visibility)
         try:
             while not self.stop_event.is_set() or not self.pose_queue.empty():
                 try:
@@ -617,7 +634,7 @@ class CollectionController:
                 if self.synthetic:
                     for row in rows:
                         row["capture_host_ns"] = captured
-                        row["infer_host_ns"] = time.monotonic_ns()
+                        row["infer_host_ns"] = time.perf_counter_ns()
                 for row in rows:
                     self.writer.submit(
                         "pose_landmarks.csv", {"frame_id": frame_id, **row}
@@ -630,6 +647,7 @@ class CollectionController:
                     self.protocol.min_visibility,
                     baseline,
                 )
+                derived.update(stability.update({r["landmark_id"]: r for r in rows}, frame.shape[1], frame.shape[0]))
                 if baseline is None and derived["quality_mask"] == "ok":
                     baseline = derived["upperarm_orientation_deg"]
                 derived.pop("upperarm_orientation_deg", None)
@@ -638,7 +656,7 @@ class CollectionController:
                     {
                         "frame_id": frame_id,
                         "capture_host_ns": captured,
-                        "infer_host_ns": time.monotonic_ns(),
+                        "infer_host_ns": time.perf_counter_ns(),
                         "arm": self.arm,
                         **derived,
                     },

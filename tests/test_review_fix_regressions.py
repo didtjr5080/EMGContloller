@@ -118,7 +118,7 @@ def test_f3_one_sample_then_silence_triggers_watchdog(monkeypatch, tmp_path):
     class Clock:
         ns = 0
 
-        def monotonic_ns(self):
+        def perf_counter_ns(self):
             return self.ns
 
         def monotonic(self):
@@ -145,6 +145,7 @@ def test_f3_one_sample_then_silence_triggers_watchdog(monkeypatch, tmp_path):
 
     class Serial:
         count = 0
+        is_open = True
 
         def readline(self):
             clock.ns += 500000000
@@ -159,7 +160,10 @@ def test_f3_one_sample_then_silence_triggers_watchdog(monkeypatch, tmp_path):
     monkeypatch.setattr(controller_module, "time", clock)
     import serial
 
-    monkeypatch.setattr(serial, "Serial", lambda *a, **kw: Serial())
+    monkeypatch.setattr(
+        "emg_collector.acquisition.esp32_serial.open_esp32_stream",
+        lambda *a, **kw: Serial(),
+    )
     c.writer = SimpleNamespace(submit=lambda *a, **kw: None)
     c._serial()
     assert c.sample_count == 1

@@ -60,6 +60,7 @@ def test_serial_deadlines_without_real_wait(
 
     class Serial:
         reads = 0
+        is_open = True
 
         def readline(self):
             clock.ns += 500_000_000
@@ -79,7 +80,10 @@ def test_serial_deadlines_without_real_wait(
         def close(self):
             pass
 
-    monkeypatch.setattr(serial, "Serial", lambda *args, **kwargs: Serial())
+    monkeypatch.setattr(
+        "emg_collector.acquisition.esp32_serial.open_esp32_stream",
+        lambda *args, **kwargs: Serial(),
+    )
     c._serial()
     assert c.sample_count == count
     if code:
