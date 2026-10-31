@@ -112,6 +112,10 @@ class MultimodalDialog(QDialog):
         self.dumbbell_count = QSpinBox()
         self.dumbbell_count.setRange(1, 100)
         self.dumbbell_count.setSuffix(" 개")
+        self.collection_label = QComboBox()
+        self.collection_label.addItem("정답", "correct")
+        self.collection_label.addItem("오답", "incorrect")
+        self.collection_label.setToolTip("이번 측정 전체에 적용할 수동 라벨입니다.")
         self.placement = QLineEdit()
         self.placement.setPlaceholderText("전극 위치·좌우·센서 부착 기록")
         self.pose_consent = WrappingCheckBox(
@@ -209,6 +213,7 @@ class MultimodalDialog(QDialog):
             ("시리얼 포트 *", self.port),
             ("카메라", self.camera),
             ("", self.settings_button),
+            ("측정 라벨 *", self.collection_label),
             ("측정 팔 *", self.arm),
             ("덤벨 무게 *", self.load),
             ("덤벨 개수 *", self.dumbbell_count),
@@ -509,7 +514,7 @@ class MultimodalDialog(QDialog):
     def _start(self):
         if self.measurement_started:
             self.status.setText(
-                "1회 측정이 이미 시작되었습니다. 추가 측정은 새로 실행하세요."
+                "측정 중입니다. 현재 측정이 종료된 뒤 다음 데이터를 측정하세요."
             )
             return
         if not self.preflight_ok:
@@ -536,6 +541,7 @@ class MultimodalDialog(QDialog):
                 consent,
                 visit,
                 self.protocol,
+                collection_label=self.collection_label.currentData(),
                 arm=self.arm.currentData(),
                 load_kg=self.load.value(),
                 dumbbell_count=self.dumbbell_count.value(),
@@ -550,7 +556,17 @@ class MultimodalDialog(QDialog):
                 mock_receive_batch_delay_ms=self.mock_delay.value(),
             )
             # Participant registration is small; stream flush/encoding/inference run on workers.
-            self.store.register_participant(private, public)
+            import csv
+
+            with (self.store.root / "participants_public.csv").open(
+                encoding="utf-8", newline=""
+            ) as fh:
+                registered = any(
+                    row["participant_id"] == public.participant_id
+                    for row in csv.DictReader(fh)
+                )
+            if not registered:
+                self.store.register_participant(private, public)
             self.controller.start()
             self.measurement_started = True
             self.setup.setEnabled(False)
@@ -564,6 +580,8 @@ class MultimodalDialog(QDialog):
             self.failure.addItem("실패 시도 확인 불가", None)
             self.failure.addItem("실패 시도 없음", "__none__")
             self.trace = []
+            self.line1.setData([], [])
+            self.line2.setData([], [])
         except (ValueError, OSError) as exc:
             self.status.setText(str(exc))
 
@@ -614,9 +632,11 @@ class MultimodalDialog(QDialog):
         if c.done.is_set():
             self.controller = None
             self.recovery_button.setEnabled(True)
-            self.start_button.setText("1회 측정 종료")
-            self.start_button.setEnabled(False)
-            self.preview_button.setEnabled(False)
+            self.measurement_started = False
+            self.setup.setEnabled(True)
+            self.start_button.setText("다음 데이터 측정 시작")
+            self.start_button.setEnabled(True)
+            self.preview_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.pain_button.setEnabled(False)
             self.status.setText(

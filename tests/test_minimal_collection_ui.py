@@ -90,6 +90,7 @@ def test_minimal_collection_keeps_required_start_and_explicit_consents(
     monkeypatch.setattr(panel, "CollectionController", fake_controller)
     window._start()
     window.timer.stop()
+    assert captured["collection_label"] == "correct"
     assert captured["arm"] == "left"
     assert captured["load_kg"] == 5.5 and captured["dumbbell_count"] == 2
     assert captured["visit"].hours_since_exercise is None
@@ -108,9 +109,16 @@ def test_minimal_collection_keeps_required_start_and_explicit_consents(
     ).read_text(encoding="utf-8")
     assert window.stop_button.isEnabled()
     window._tick()
-    assert not window.start_button.isEnabled()
+    assert window.start_button.isEnabled()
+    assert window.setup.isEnabled()
+    assert window.preview_button.isEnabled()
+    assert not window.measurement_started
+    window.collection_label.setCurrentIndex(1)
     window._start()
-    assert "1회" in window.status.text()
+    assert captured["collection_label"] == "incorrect"
+    assert window.measurement_started
+    assert not window.start_button.isEnabled()
+    window._tick()
     with (window.store.root / "participants_public.csv").open(
         encoding="utf-8", newline=""
     ) as fh:

@@ -36,6 +36,7 @@ class CollectionController:
         visit,
         protocol,
         *,
+        collection_label=None,
         arm="right",
         load_kg=0,
         dumbbell_count=1,
@@ -59,6 +60,9 @@ class CollectionController:
             raise ValueError("research and pose-coordinate consent are required")
         if not placement:
             raise ValueError("전극 위치를 입력하세요.")
+        if collection_label not in (None, "correct", "incorrect"):
+            raise ValueError("collection_label must be correct or incorrect")
+        self.collection_label = collection_label
         self.root = Path(root)
         # Python 3.11 on Windows uses a coarse clock for monotonic_ns;
         # QPC keeps rapid camera reads distinct. All capture/inference/serial
@@ -209,6 +213,7 @@ class CollectionController:
             metadata = {
                 "schema_version": "3.0.0",
                 "profile": "biceps_triceps_v3",
+                "collection_label": self.collection_label,
                 "labeling": {
                     "source": "mediapipe_pose",
                     "sample_labels_file": "labeled_samples.csv",
